@@ -1,0 +1,26 @@
+[package]
+name = "rustmesh"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of OpenMesh - A versatile geometric data structure"
+authors = ["RustMesh Developers"]
+
+[dependencies]
+# 几何库
+glam = { version = "0.25", features = ["mint"] }
+nalgebra = "0.33"
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 迭代器工具
+itertools = "0.13"
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3"
+
+[[bench]]
+name = "benchmarks"
+harness = false
