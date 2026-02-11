@@ -138,9 +138,10 @@ impl Default for HalfedgePropertyContainer {
 #[derive(Debug, Clone, Default)]
 pub struct ArrayKernel {
     vertices: Vec<Vertex>,
+    halfedges: Vec<Halfedge>,
     edges: Vec<Edge>,
     faces: Vec<Face>,
-    
+
     // Property containers
     vertex_props: VertexPropertyContainer,
     edge_props: EdgePropertyContainer,
@@ -153,6 +154,7 @@ impl ArrayKernel {
     pub fn new() -> Self {
         Self {
             vertices: Vec::new(),
+            halfedges: Vec::new(),
             edges: Vec::new(),
             faces: Vec::new(),
             vertex_props: VertexPropertyContainer::default(),
@@ -165,6 +167,7 @@ impl ArrayKernel {
     /// Clear all data
     pub fn clear(&mut self) {
         self.vertices.clear();
+        self.halfedges.clear();
         self.edges.clear();
         self.faces.clear();
     }
@@ -172,74 +175,137 @@ impl ArrayKernel {
     // --- Handle to item conversion ---
 
     /// Get a vertex by handle (const)
+    #[inline]
     pub fn vertex(&self, vh: VertexHandle) -> Option<&Vertex> {
-        let idx = vh.idx() as usize;
-        self.vertices.get(idx)
+        self.vertices.get(vh.idx_usize())
     }
 
     /// Get a vertex by handle (mutable)
+    #[inline]
     pub fn vertex_mut(&mut self, vh: VertexHandle) -> Option<&mut Vertex> {
-        let idx = vh.idx() as usize;
-        self.vertices.get_mut(idx)
+        self.vertices.get_mut(vh.idx_usize())
+    }
+
+    /// Get a halfedge by handle (const)
+    #[inline]
+    pub fn halfedge(&self, heh: HalfedgeHandle) -> Option<&Halfedge> {
+        self.halfedges.get(heh.idx_usize())
+    }
+
+    /// Get a halfedge by handle (mutable)
+    #[inline]
+    pub fn halfedge_mut(&mut self, heh: HalfedgeHandle) -> Option<&mut Halfedge> {
+        self.halfedges.get_mut(heh.idx_usize())
     }
 
     /// Get an edge by handle (const)
+    #[inline]
     pub fn edge(&self, eh: EdgeHandle) -> Option<&Edge> {
-        let idx = eh.idx() as usize;
-        self.edges.get(idx)
+        self.edges.get(eh.idx_usize())
     }
 
     /// Get an edge by handle (mutable)
+    #[inline]
     pub fn edge_mut(&mut self, eh: EdgeHandle) -> Option<&mut Edge> {
-        let idx = eh.idx() as usize;
-        self.edges.get_mut(idx)
+        self.edges.get_mut(eh.idx_usize())
     }
 
     /// Get a face by handle (const)
+    #[inline]
     pub fn face(&self, fh: FaceHandle) -> Option<&Face> {
-        let idx = fh.idx() as usize;
-        self.faces.get(idx)
+        self.faces.get(fh.idx_usize())
     }
 
     /// Get a face by handle (mutable)
+    #[inline]
     pub fn face_mut(&mut self, fh: FaceHandle) -> Option<&mut Face> {
-        let idx = fh.idx() as usize;
-        self.faces.get_mut(idx)
+        self.faces.get_mut(fh.idx_usize())
     }
 
-    /// Get a halfedge by handle (returns None for now - needs full implementation)
-    pub fn halfedge(&self, _heh: HalfedgeHandle) -> Option<&Halfedge> {
-        // In a full implementation, halfedges would be stored separately
-        // or we would return a view constructed from edge data
-        None
+    // --- Unsafe direct access (for performance) ---
+
+    /// Get vertex by index without bounds check
+    /// # Safety
+    /// Caller must ensure `idx` is within bounds.
+    #[inline]
+    pub unsafe fn vertex_unchecked(&self, idx: usize) -> glam::Vec3 {
+        let ptr = self.vertices.as_ptr();
+        let v = &*ptr.add(idx);
+        v.point
+    }
+
+    /// Get raw vertex coordinates (x, y, z)
+    /// # Safety
+    /// Caller must ensure `idx` is within bounds.
+    #[inline]
+    pub unsafe fn vertex_raw(&self, idx: usize) -> (f32, f32, f32) {
+        let ptr = self.vertices.as_ptr() as *const f32;
+        let x = *ptr.add(idx * 3);
+        let y = *ptr.add(idx * 3 + 1);
+        let z = *ptr.add(idx * 3 + 2);
+        (x, y, z)
+    }
+
+    /// Get vertex pointer for bulk processing
+    /// # Safety
+    /// Caller must ensure the returned pointer is not used after modification.
+    #[inline]
+    pub unsafe fn vertices_ptr(&self) -> *const Vertex {
+        self.vertices.as_ptr()
     }
 
     // --- Item creation ---
 
     /// Add a new vertex and return its handle
+    #[inline]
     pub fn add_vertex(&mut self, point: glam::Vec3) -> VertexHandle {
-        let idx = self.vertices.len() as i32;
+        let idx = self.vertices.len() as u32;
         self.vertices.push(Vertex::new(point));
         VertexHandle::new(idx)
     }
 
     /// Add a new edge and return the handle to the first halfedge
+    #[inline]
     pub fn add_edge(&mut self, start_vh: VertexHandle, end_vh: VertexHandle) -> HalfedgeHandle {
-        let edge_idx = self.edges.len() as i32;
-        let he0_idx = edge_idx * 2;
-        let he1_idx = edge_idx * 2 + 1;
-        
-        let he0 = HalfedgeHandle::new(he0_idx);
-        let he1 = HalfedgeHandle::new(he1_idx);
-        
-        self.edges.push(Edge::new(he0, he1));
-        
+        let edge_idx = self.edges.len() as u32;
+        let he0_idx = self.halfedges.len() as u32;
+        let he1_idx = he0_idx + 1;
+
+        // Create halfedges
+        let he0 = Halfedge {
+            vertex_handle: end_vh,
+            face_handle: None,
+            next_halfedge_handle: None,
+            prev_halfedge_handle: None,
+            opposite_halfedge_handle: Some(HalfedgeHandle::new(he1_idx)),
+            edge_idx,
+        };
+
+        let he1 = Halfedge {
+            vertex_handle: start_vh,
+            face_handle: None,
+            next_halfedge_handle: None,
+            prev_halfedge_handle: None,
+            opposite_halfedge_handle: Some(HalfedgeHandle::new(he0_idx)),
+            edge_idx,
+        };
+
+        // Create edge with halfedge references
+        let he0_handle = HalfedgeHandle::new(he0_idx);
+        let he1_handle = HalfedgeHandle::new(he1_idx);
+        self.edges.push(Edge::new(he0_handle, he1_handle));
+
+        // Store halfedges
+        self.halfedges.push(he0);
+        self.halfedges.push(he1);
+
         HalfedgeHandle::new(he0_idx)
     }
 
     /// Add a new face and return its handle
-    pub fn add_face(&mut self, halfedge_handle: HalfedgeHandle) -> FaceHandle {
-        let idx = self.faces.len() as i32;
+    #[inline]
+    pub fn add_face(&mut self, halfedge_handle: Option<HalfedgeHandle>) -> FaceHandle {
+        let idx = self.faces.len() as u32;
         self.faces.push(Face::new(halfedge_handle));
         FaceHandle::new(idx)
     }
@@ -249,6 +315,12 @@ impl ArrayKernel {
     /// Get the number of vertices
     pub fn n_vertices(&self) -> usize {
         self.vertices.len()
+    }
+
+    /// Get vertices as slice (for efficient iteration)
+    #[inline]
+    pub fn vertices_slice(&self) -> &[Vertex] {
+        &self.vertices
     }
 
     /// Get the number of edges
@@ -263,7 +335,7 @@ impl ArrayKernel {
 
     /// Get the number of halfedges
     pub fn n_halfedges(&self) -> usize {
-        self.edges.len() * 2
+        self.halfedges.len()
     }
 
     /// Check if vertices are empty
@@ -328,46 +400,120 @@ impl ArrayKernel {
     }
 
     /// Get the to-vertex of a halfedge
+    #[inline]
     pub fn to_vertex_handle(&self, heh: HalfedgeHandle) -> VertexHandle {
-        // In a full implementation, we'd look up the halfedge data
-        VertexHandle::new(heh.idx() ^ 1)
+        self.halfedge(heh)
+            .map(|he| he.vertex_handle)
+            .unwrap_or(VertexHandle::invalid())
+    }
+
+    /// Get the from-vertex of a halfedge
+    #[inline]
+    pub fn from_vertex_handle(&self, heh: HalfedgeHandle) -> VertexHandle {
+        // Get opposite halfedge to find from vertex
+        let opp_heh = self.opposite_halfedge_handle(heh);
+        self.halfedge(opp_heh)
+            .map(|he| he.vertex_handle)
+            .unwrap_or(VertexHandle::invalid())
     }
 
     /// Get the opposite halfedge
+    #[inline]
     pub fn opposite_halfedge_handle(&self, heh: HalfedgeHandle) -> HalfedgeHandle {
-        HalfedgeHandle::new(heh.idx() ^ 1)
+        self.halfedge(heh)
+            .and_then(|he| he.opposite_halfedge_handle)
+            .unwrap_or(HalfedgeHandle::invalid())
     }
 
     /// Get the edge handle from a halfedge
+    #[inline]
     pub fn edge_handle(&self, heh: HalfedgeHandle) -> EdgeHandle {
         EdgeHandle::new(heh.idx() >> 1)
     }
 
     /// Get the halfedge handle from an edge (0 or 1)
+    #[inline]
     pub fn edge_halfedge_handle(&self, eh: EdgeHandle, idx: usize) -> HalfedgeHandle {
-        HalfedgeHandle::new((eh.idx() << 1) + idx as i32)
+        HalfedgeHandle::new((eh.idx() << 1) + idx as u32)
     }
 
     /// Get the face handle from a halfedge
     pub fn face_handle(&self, heh: HalfedgeHandle) -> Option<FaceHandle> {
-        // Simplified: assume face index matches halfedge index / 2
-        Some(FaceHandle::new(heh.idx() >> 1))
+        self.halfedge(heh).and_then(|he| he.face_handle)
     }
 
     /// Set the face handle for a halfedge
     pub fn set_face_handle(&mut self, heh: HalfedgeHandle, fh: FaceHandle) {
-        // In a full implementation, store in halfedge data
+        if let Some(he) = self.halfedge_mut(heh) {
+            he.face_handle = Some(fh);
+        }
     }
 
     /// Set a halfedge as boundary (no face)
     pub fn set_boundary(&mut self, heh: HalfedgeHandle) {
-        // In a full implementation
+        // In a full implementation, store in halfedge data
     }
 
     /// Check if a halfedge is a boundary
     pub fn is_boundary(&self, heh: HalfedgeHandle) -> bool {
-        // Simplified implementation
-        true
+        // Simplified implementation - check if face handle is invalid
+        let fh = self.face_handle(heh);
+        fh.map(|f| !f.is_valid()).unwrap_or(true)
+    }
+
+    // --- Halfedge cycle navigation ---
+
+    /// Get the next halfedge in the cycle
+    #[inline]
+    pub fn next_halfedge_handle(&self, heh: HalfedgeHandle) -> HalfedgeHandle {
+        self.halfedge(heh)
+            .and_then(|he| he.next_halfedge_handle)
+            .unwrap_or(HalfedgeHandle::invalid())
+    }
+
+    /// Set the next halfedge in the cycle
+    pub fn set_next_halfedge_handle(&mut self, heh: HalfedgeHandle, next_heh: HalfedgeHandle) {
+        if let Some(he) = self.halfedge_mut(heh) {
+            he.next_halfedge_handle = Some(next_heh);
+        }
+        // Also set prev of next
+        if let Some(he) = self.halfedge_mut(next_heh) {
+            he.prev_halfedge_handle = Some(heh);
+        }
+    }
+
+    /// Get the previous halfedge in the cycle
+    #[inline]
+    pub fn prev_halfedge_handle(&self, heh: HalfedgeHandle) -> HalfedgeHandle {
+        self.halfedge(heh)
+            .and_then(|he| he.prev_halfedge_handle)
+            .unwrap_or(HalfedgeHandle::invalid())
+    }
+
+    /// Set the prev halfedge in the cycle
+    pub fn set_prev_halfedge_handle(&mut self, heh: HalfedgeHandle, prev_heh: HalfedgeHandle) {
+        if let Some(he) = self.halfedge_mut(heh) {
+            he.prev_halfedge_handle = Some(prev_heh);
+        }
+    }
+
+    /// Get the from-vertex of a halfedge as Option
+    pub fn from_vertex_handle_opt(&self, heh: HalfedgeHandle) -> Option<VertexHandle> {
+        self.halfedge(self.opposite_halfedge_handle(heh))
+            .map(|he| he.vertex_handle)
+    }
+
+    /// Get the face halfedge handle
+    pub fn face_halfedge_handle(&self, fh: FaceHandle) -> Option<HalfedgeHandle> {
+        self.face(fh).and_then(|f| f.halfedge_handle)
+    }
+
+    /// Add a triangle face (optimized)
+    #[inline]
+    pub fn add_face_triangle(&mut self, halfedge_handle: HalfedgeHandle) -> FaceHandle {
+        let idx = self.faces.len() as u32;
+        self.faces.push(Face::new(Some(halfedge_handle)));
+        FaceHandle::new(idx)
     }
 }
 

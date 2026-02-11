@@ -24,6 +24,26 @@ pub fn triangle_normal(p0: Point, p1: Point, p2: Point) -> Vector {
     (p1 - p0).cross(p2 - p0).normalize()
 }
 
+/// Check if a 2D point is inside a triangle (barycentric technique)
+#[inline]
+pub fn point_in_triangle_2d(p: Point, a: Point, b: Point, c: Point) -> bool {
+    let v0 = c - a;
+    let v1 = b - a;
+    let v2 = p - a;
+
+    let dot00 = v0.dot(v0);
+    let dot01 = v0.dot(v1);
+    let dot02 = v0.dot(v2);
+    let dot11 = v1.dot(v1);
+    let dot12 = v1.dot(v2);
+
+    let inv_denom = 1.0 / (dot00 * dot11 - dot01 * dot01);
+    let u = (dot11 * dot02 - dot01 * dot12) * inv_denom;
+    let v = (dot00 * dot12 - dot01 * dot02) * inv_denom;
+
+    u >= 0.0 && v >= 0.0 && (u + v) <= 1.0
+}
+
 /// Calculate the bounding box of a point set
 #[inline]
 pub fn bounding_box(points: &[Point]) -> (Point, Point) {

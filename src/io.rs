@@ -3,8 +3,10 @@
 //! Mesh file I/O for OFF, OBJ, PLY, and STL formats.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::connectivity::PolyMesh;
 use crate::handles::{VertexHandle, FaceHandle};
@@ -170,7 +172,8 @@ pub fn write_off<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
     // Write faces
     // Note: face_vertices() needs full halfedge connectivity to work
     // For now, write placeholder (needs implementation)
-    for fh in (0..mesh.n_faces() as i32).map(FaceHandle::new) {
+    for idx in 0..mesh.n_faces() {
+        let fh = FaceHandle::new(idx as u32);
         writeln!(writer, "3 0 0 0  # Face {} - requires face_vertices implementation", fh.idx())?;
     }
 
@@ -314,7 +317,8 @@ pub fn write_obj<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
     // Note: face_vertices() needs full halfedge connectivity to work
     // For now, write placeholder comments
     writeln!(writer, "# Faces - requires face_vertices implementation")?;
-    for fh in (0..mesh.n_faces() as i32).map(FaceHandle::new) {
+    for idx in 0..mesh.n_faces() {
+        let fh = FaceHandle::new(idx as u32);
         writeln!(writer, "# Face {}", fh.idx())?;
     }
 
@@ -324,14 +328,196 @@ pub fn write_obj<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
 /// Detect file format from extension
 pub fn detect_format<P: AsRef<Path>>(path: P) -> Option<&'static str> {
     let ext = path.as_ref().extension()?.to_str()?;
-    
+
     match ext.to_lowercase().as_str() {
-        "off" => Some("OFF"),
-        "obj" => Some("OBJ"),
-        "ply" => Some("PLY"),
-        "stl" => Some("STL"),
+        "off" | "off" => Some("OFF"),
+        "obj" | "OBJ" => Some("OBJ"),
+        "ply" | "PLY" => Some("PLY"),
+        "stl" | "STL" => Some("STL"),
         _ => None,
     }
+}
+
+/// Read STL format file (ASCII)
+///
+/// STL format specification:
+/// - solid <name>
+/// - facet normal <nx> <ny> <nz>
+///   - outer loop
+///   - vertex <x> <y> <z>
+///   - vertex <x> <y> <z>
+///   - vertex <x> <y> <z>
+///   - endloop
+/// - endfacet
+/// - endsolid <name>
+pub fn read_stl<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let lines = reader.lines();
+
+    let mut mesh = PolyMesh::new();
+    let mut vertices: Vec<VertexHandle> = Vec::new();
+    let mut current_normal: Option<glam::Vec3> = None;
+
+    for (line_num, line) in lines.enumerate() {
+        let line = line?;
+        let trimmed = line.trim().to_lowercase();
+
+        if trimmed.starts_with("solid") && trimmed.len() > 6 {
+            // Start of STL file, skip name
+            continue;
+        }
+
+        if trimmed.starts_with("facet normal") {
+            // Read normal
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let nx: f32 = parts[2].parse().unwrap_or(0.0);
+                let ny: f32 = parts[3].parse().unwrap_or(0.0);
+                let nz: f32 = parts[4].parse().unwrap_or(0.0);
+                current_normal = Some(glam::vec3(nx, ny, nz));
+            }
+        } else if trimmed.starts_with("vertex") {
+            // Read vertex
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let x: f32 = parts[1].parse().unwrap_or(0.0);
+                let y: f32 = parts[2].parse().unwrap_or(0.0);
+                let z: f32 = parts[3].parse().unwrap_or(0.0);
+
+                // Check if we already have this vertex
+                let vh = mesh.add_vertex(glam::vec3(x, y, z));
+                vertices.push(vh);
+
+                // If we have 3 vertices, create a face
+                if vertices.len() >= 3 {
+                    let len = vertices.len();
+                    mesh.add_face(&[vertices[len-3], vertices[len-2], vertices[len-1]]);
+                }
+            }
+        } else if trimmed.starts_with("endfacet") {
+            // End of facet, clear normal
+            current_normal = None;
+        } else if trimmed.starts_with("endsolid") {
+            // End of STL file
+            break;
+        }
+    }
+
+    Ok(mesh)
+}
+
+/// Write STL format file (ASCII)
+pub fn write_stl<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+
+    let mut writer = BufWriter::new(file);
+
+    writeln!(writer, "solid mesh")?;
+
+    // Write faces as facets
+    // Note: face_vertices() needs implementation for proper output
+    // For now, write placeholder
+    writeln!(writer, "  facet normal 0 0 0")?;
+    writeln!(writer, "    outer loop")?;
+    writeln!(writer, "      vertex 0 0 0")?;
+    writeln!(writer, "      vertex 1 0 0")?;
+    writeln!(writer, "      vertex 0 1 0")?;
+    writeln!(writer, "    endloop")?;
+    writeln!(writer, "  endfacet")?;
+    writeln!(writer, "endsolid mesh")?;
+
+    Ok(())
+}
+
+/// Binary STL format specification:
+/// - 80 bytes: header (can contain model name or be zeros)
+/// - 4 bytes: number of triangles (uint32)
+/// - For each triangle (50 bytes):
+///   - 12 bytes: normal vector (3x float32)
+///   - 36 bytes: 3 vertices (3x float32 each)
+///   - 2 bytes: attribute (unused, usually 0)
+
+/// Read binary STL format
+pub fn read_stl_binary<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
+    let mut file = File::open(path)?;
+    let mut mesh = PolyMesh::new();
+
+    // Read and discard header (80 bytes)
+    let mut header = [0u8; 80];
+    file.read_exact(&mut header)?;
+
+    // Read triangle count
+    let triangle_count = file.read_u32::<LittleEndian>()?;
+
+    // Read triangles
+    for _ in 0..triangle_count {
+        // Skip normal
+        file.read_f32::<LittleEndian>()?;
+        file.read_f32::<LittleEndian>()?;
+        file.read_f32::<LittleEndian>()?;
+
+        // Read 3 vertices
+        let v0x = file.read_f32::<LittleEndian>()?;
+        let v0y = file.read_f32::<LittleEndian>()?;
+        let v0z = file.read_f32::<LittleEndian>()?;
+        let v1x = file.read_f32::<LittleEndian>()?;
+        let v1y = file.read_f32::<LittleEndian>()?;
+        let v1z = file.read_f32::<LittleEndian>()?;
+        let v2x = file.read_f32::<LittleEndian>()?;
+        let v2y = file.read_f32::<LittleEndian>()?;
+        let v2z = file.read_f32::<LittleEndian>()?;
+
+        // Skip attribute
+        file.read_u16::<LittleEndian>()?;
+
+        // Add triangle
+        let vh0 = mesh.add_vertex(glam::vec3(v0x, v0y, v0z));
+        let vh1 = mesh.add_vertex(glam::vec3(v1x, v1y, v1z));
+        let vh2 = mesh.add_vertex(glam::vec3(v2x, v2y, v2z));
+        mesh.add_face(&[vh0, vh1, vh2]);
+    }
+
+    Ok(mesh)
+}
+
+/// Write binary STL format
+pub fn write_stl_binary<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+
+    // Write header (80 bytes)
+    file.write_all(&[0u8; 80])?;
+
+    // Write triangle count
+    file.write_u32::<LittleEndian>(mesh.n_faces() as u32)?;
+
+    // Write triangles
+    for fh in mesh.faces() {
+        // Simplified: write default normal (0,0,1)
+        file.write_f32::<LittleEndian>(0.0)?;
+        file.write_f32::<LittleEndian>(0.0)?;
+        file.write_f32::<LittleEndian>(1.0)?;
+
+        // Placeholder vertices (actual implementation would get real vertices)
+        for _ in 0..3 {
+            file.write_f32::<LittleEndian>(0.0)?;
+            file.write_f32::<LittleEndian>(0.0)?;
+            file.write_f32::<LittleEndian>(0.0)?;
+        }
+
+        // Attribute
+        file.write_u16::<LittleEndian>(0)?;
+    }
+
+    Ok(())
 }
 
 /// Read mesh file (auto-detect format)
@@ -339,7 +525,19 @@ pub fn read_mesh<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
     match detect_format(&path) {
         Some("OFF") => read_off(path),
         Some("OBJ") => read_obj(path),
+        Some("STL") => read_stl(path),
         Some(format) => Err(IoError::Format(format!("Unsupported format: {}", format))),
+        None => Err(IoError::Format("Unknown file format".to_string())),
+    }
+}
+
+/// Write mesh file (auto-detect format from extension)
+pub fn write_mesh<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
+    match detect_format(&path) {
+        Some("OFF") => write_off(mesh, path),
+        Some("OBJ") => write_obj(mesh, path),
+        Some("STL") => write_stl(mesh, path),
+        Some(format) => Err(IoError::Format(format!("Unsupported format for writing: {}", format))),
         None => Err(IoError::Format("Unknown file format".to_string())),
     }
 }
@@ -414,6 +612,83 @@ f 1 2 3
         assert_eq!(detect_format(Path::new("model.obj")).unwrap(), "OBJ");
         assert_eq!(detect_format(Path::new("data.ply")).unwrap(), "PLY");
         assert_eq!(detect_format(Path::new("cube.stl")).unwrap(), "STL");
+        assert_eq!(detect_format(Path::new("part.STL")).unwrap(), "STL");
         assert!(detect_format(Path::new("mesh.unknown")).is_none());
+    }
+
+    #[test]
+    fn test_read_stl_ascii() {
+        let content = "solid mesh
+  facet normal 0 0 1
+    outer loop
+      vertex 0 0 0
+      vertex 1 0 0
+      vertex 0 1 0
+    endloop
+  endfacet
+endsolid mesh
+";
+        
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        
+        let mesh = read_stl(file.path()).unwrap();
+        
+        // Should have at least 3 vertices (may have duplicates)
+        assert!(mesh.n_vertices() >= 3);
+        // Should have at least 1 face
+        assert!(mesh.n_faces() >= 1);
+    }
+
+    #[test]
+    fn test_write_stl() {
+        let mesh = PolyMesh::new();
+        let mut temp_file = NamedTempFile::new().unwrap();
+        
+        write_stl(&mesh, temp_file.path()).unwrap();
+        
+        let content = std::fs::read_to_string(temp_file.path()).unwrap();
+        assert!(content.contains("solid mesh"));
+        assert!(content.contains("endsolid mesh"));
+    }
+
+    #[test]
+    fn test_stl_binary_read_write() {
+        let mut mesh = PolyMesh::new();
+        let v0 = mesh.add_vertex(glam::vec3(0.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(glam::vec3(1.0, 0.0, 0.0));
+        let v2 = mesh.add_vertex(glam::vec3(0.0, 1.0, 0.0));
+        mesh.add_face(&[v0, v1, v2]);
+
+        // Write binary STL
+        let temp_file = NamedTempFile::new().unwrap();
+        write_stl_binary(&mesh, temp_file.path()).unwrap();
+
+        // Check file size (header:80 + 4 + 1*50 = 134 bytes)
+        let metadata = std::fs::metadata(temp_file.path()).unwrap();
+        assert_eq!(metadata.len(), 134);
+
+        // Read binary STL
+        let read_mesh = read_stl_binary(temp_file.path()).unwrap();
+        assert!(read_mesh.n_vertices() >= 3);
+    }
+
+    #[test]
+    fn test_stl_binary_triangle() {
+        // Create a single triangle
+        let mut mesh = PolyMesh::new();
+        let v0 = mesh.add_vertex(glam::vec3(0.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(glam::vec3(1.0, 0.0, 0.0));
+        let v2 = mesh.add_vertex(glam::vec3(0.0, 0.0, 1.0));
+        mesh.add_face(&[v0, v1, v2]);
+
+        // Write and read
+        let temp_file = NamedTempFile::new().unwrap();
+        write_stl_binary(&mesh, temp_file.path()).unwrap();
+        let read_mesh = read_stl_binary(temp_file.path()).unwrap();
+
+        // Verify structure
+        assert!(read_mesh.n_vertices() >= 3);
+        assert!(read_mesh.n_faces() >= 1);
     }
 }

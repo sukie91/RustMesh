@@ -7,19 +7,42 @@ authors = ["RustMesh Developers"]
 
 [dependencies]
 # 几何库
-glam = { version = "0.25", features = ["mint"] }
+glam = "0.25"
 nalgebra = "0.33"
 
 # 序列化
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# IO 工具
+byteorder = "1"
+
 # 迭代器工具
 itertools = "0.13"
+
+# 测试工具
+rand = "0.8"
 
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3"
+
+# 发布配置 - 激进优化
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
+panic = "abort"
+
+# 开发配置 - 快速编译 + 调试支持
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+# 测试配置
+[profile.test]
+opt-level = 0
 
 [[bench]]
 name = "benchmarks"

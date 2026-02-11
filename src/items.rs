@@ -54,10 +54,11 @@ pub struct Halfedge {
     /// The opposite halfedge (same edge, opposite direction)
     pub opposite_halfedge_handle: Option<HalfedgeHandle>,
     /// The edge index this halfedge belongs to
-    pub edge_idx: i32,
+    pub edge_idx: u32,
 }
 
 impl Default for Halfedge {
+    #[inline]
     fn default() -> Self {
         Self {
             vertex_handle: VertexHandle::default(),
@@ -65,7 +66,7 @@ impl Default for Halfedge {
             next_halfedge_handle: None,
             prev_halfedge_handle: None,
             opposite_halfedge_handle: None,
-            edge_idx: -1,
+            edge_idx: u32::MAX,
         }
     }
 }
@@ -124,9 +125,9 @@ impl Default for Face {
 
 impl Face {
     /// Create a new face with the given halfedge handle
-    pub fn new(halfedge_handle: HalfedgeHandle) -> Self {
+    pub fn new(halfedge_handle: Option<HalfedgeHandle>) -> Self {
         Self {
-            halfedge_handle: Some(halfedge_handle),
+            halfedge_handle,
         }
     }
 }
@@ -155,7 +156,7 @@ mod tests {
     #[test]
     fn test_face_creation() {
         let he = HalfedgeHandle::new(5);
-        let f = Face::new(he);
+        let f = Face::new(Some(he));
         assert_eq!(f.halfedge_handle, Some(he));
     }
 }
