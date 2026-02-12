@@ -1,3 +1,3 @@
 [submodule "rustmesh"]
 	path = rustmesh
-	url = ./rustmesh
+	url = git@github.com:sukie91/RustMesh.git
