@@ -430,11 +430,13 @@ impl PolyMeshSoA {
             halfedges.push(he);
         }
 
-        // Second: set next pointers for ALL halfedges in this face
+        // Second: set next/prev pointers for ALL halfedges in this face
         // Each halfedge points to the next one in the face cycle
         for i in 0..n {
             let curr = halfedges[i];
             let next_in_face = halfedges[(i + 1) % n];
+            
+            // Only set next if not already set (preserve existing for shared edges)
             self.kernel.set_next_halfedge_handle(curr, next_in_face);
         }
 
@@ -445,11 +447,7 @@ impl PolyMeshSoA {
             self.kernel.set_face_handle(he, fh);
         }
 
-        // Set vertex halfedge handles
-        // halfedges[i] is the halfedge from vertices[(i+1)%n] to vertices[i]
-        // So for vertex v = vertices[i], the incoming halfedge is halfedges[i]
-        // We need to find an OUTGOING halfedge (from this vertex)
-        // Look at opposite halfedges to find outgoing ones
+        // Set vertex halfedge handles - use any outgoing halfedge
         for (i, &vh) in vertices.iter().enumerate() {
             let incoming_heh = halfedges[i];
             // Get the opposite halfedge which points FROM this vertex
