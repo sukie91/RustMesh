@@ -292,300 +292,6 @@ impl<'a> Iterator for VertexFaceCirculator<'a> {
     }
 }
 
-/// Polygonal mesh with full connectivity
-#[derive(Debug, Clone, Default)]
-pub struct PolyMesh {
-    kernel: ArrayKernel,
-}
-
-impl PolyMesh {
-    /// Create a new empty polygon mesh
-    pub fn new() -> Self {
-        Self {
-            kernel: ArrayKernel::new(),
-        }
-    }
-
-    /// Clear the mesh
-    pub fn clear(&mut self) {
-        self.kernel.clear();
-    }
-
-    // --- Vertex operations ---
-
-    /// Add a vertex at the given position
-    pub fn add_vertex(&mut self, point: glam::Vec3) -> VertexHandle {
-        self.kernel.add_vertex(point)
-    }
-
-    /// Get vertex position
-    pub fn point(&self, vh: VertexHandle) -> Option<glam::Vec3> {
-        self.kernel.vertex(vh).map(|v| v.point)
-    }
-
-    /// Set vertex position
-    pub fn set_point(&mut self, vh: VertexHandle, point: glam::Vec3) {
-        if let Some(v) = self.kernel.vertex_mut(vh) {
-            v.point = point;
-        }
-    }
-
-    /// Get vertex position - unchecked raw pointer access
-    /// Returns (x, y, z) as direct memory access
-    #[inline]
-    pub unsafe fn point_raw(&self, vh: VertexHandle) -> (f32, f32, f32) {
-        let idx = vh.idx() as usize;
-        self.kernel.vertex_raw(idx)
-    }
-
-    // --- Edge operations ---
-
-    /// Add an edge between two vertices
-    pub fn add_edge(&mut self, v0: VertexHandle, v1: VertexHandle) -> HalfedgeHandle {
-        self.kernel.add_edge(v0, v1)
-    }
-
-    // --- Face operations ---
-
-    /// Add a face from a list of vertex handles
-    pub fn add_face(&mut self, vertices: &[VertexHandle]) -> Option<FaceHandle> {
-        if vertices.len() < 3 {
-            return None;
-        }
-
-        // Create halfedges for each edge of the face
-        let n = vertices.len();
-        let mut halfedges: Vec<HalfedgeHandle> = Vec::with_capacity(n);
-
-        for i in 0..n {
-            let start = vertices[i];
-            let end = vertices[(i + 1) % n];
-            let he = self.add_edge(end, start); // Halfedge points to end
-            halfedges.push(he);
-        }
-
-        // Link halfedges into a cycle
-        for i in 0..n {
-            let curr = halfedges[i];
-            let next = halfedges[(i + 1) % n];
-            
-            // In a full implementation, set next/prev pointers
-            // self.kernel.set_next_halfedge_handle(curr, next);
-        }
-
-        // Create the face
-        let fh = self.kernel.add_face(Some(halfedges[0]));
-
-        // Connect vertices to halfedges
-        for (i, &vh) in vertices.iter().enumerate() {
-            self.kernel.set_halfedge_handle(vh, halfedges[i]);
-        }
-
-        Some(fh)
-    }
-
-    // --- Iteration ---
-
-    /// Get an iterator over all vertices
-    pub fn vertices(&self) -> VertexIter<'_> {
-        VertexIter::new(&self.kernel)
-    }
-
-    /// Get an iterator over all edges
-    pub fn edges(&self) -> EdgeIter<'_> {
-        EdgeIter::new(&self.kernel)
-    }
-
-    /// Get an iterator over all faces
-    pub fn faces(&self) -> FaceIter<'_> {
-        FaceIter::new(&self.kernel)
-    }
-
-    /// Get an iterator over all halfedges
-    pub fn halfedges(&self) -> HalfedgeIter<'_> {
-        HalfedgeIter::new(&self.kernel)
-    }
-
-    // --- High-performance iteration (no Handle overhead) ---
-
-    /// Iterate vertex indices directly (fastest)
-    /// Returns indices instead of handles to avoid Handle creation overhead
-    pub fn vertex_indices(&self) -> VertexIndexIter {
-        VertexIndexIter::new(self.n_vertices())
-    }
-
-    /// Iterate face indices directly (fastest)
-    pub fn face_indices(&self) -> FaceIndexIter {
-        FaceIndexIter::new(self.n_faces())
-    }
-
-    // --- High-performance vertex access (unsafe) ---
-
-    /// Get vertex data pointer for bulk processing
-    /// # Safety
-    /// Caller must ensure valid indices.
-    #[inline]
-    pub unsafe fn vertex_ptr(&self) -> *const Vertex {
-        self.kernel.vertices_ptr()
-    }
-
-    /// Get vertex by index (unchecked)
-    /// # Safety
-    /// Caller must ensure idx < n_vertices().
-    #[inline]
-    pub unsafe fn vertex_unchecked(&self, idx: usize) -> &Vertex {
-        &*self.kernel.vertices_ptr().add(idx)
-    }
-
-    /// Get vertex point by index (unchecked)
-    /// # Safety
-    /// Caller must ensure idx < n_vertices().
-    #[inline]
-    pub unsafe fn point_unchecked(&self, idx: usize) -> glam::Vec3 {
-        let ptr = self.kernel.vertices_ptr();
-        let v = &*ptr.add(idx);
-        v.point
-    }
-
-    // --- Count queries ---
-
-    /// Get the number of vertices
-    pub fn n_vertices(&self) -> usize {
-        self.kernel.n_vertices()
-    }
-
-    /// Get the number of edges
-    pub fn n_edges(&self) -> usize {
-        self.kernel.n_edges()
-    }
-
-    /// Get the number of faces
-    pub fn n_faces(&self) -> usize {
-        self.kernel.n_faces()
-    }
-
-    /// Get the number of halfedges
-    pub fn n_halfedges(&self) -> usize {
-        self.kernel.n_halfedges()
-    }
-
-    // --- Connectivity queries ---
-
-    /// Get the halfedge handle from a vertex
-    pub fn halfedge_handle(&self, vh: VertexHandle) -> Option<HalfedgeHandle> {
-        self.kernel.halfedge_handle(vh)
-    }
-
-    /// Get the edge handle from a halfedge
-    pub fn edge_handle(&self, heh: HalfedgeHandle) -> EdgeHandle {
-        self.kernel.edge_handle(heh)
-    }
-
-    /// Get the opposite halfedge
-    pub fn opposite_halfedge_handle(&self, heh: HalfedgeHandle) -> HalfedgeHandle {
-        self.kernel.opposite_halfedge_handle(heh)
-    }
-
-    /// Get the next halfedge in the cycle
-    pub fn next_halfedge_handle(&self, heh: HalfedgeHandle) -> HalfedgeHandle {
-        self.kernel.next_halfedge_handle(heh)
-    }
-
-    /// Get the previous halfedge in the cycle
-    pub fn prev_halfedge_handle(&self, heh: HalfedgeHandle) -> HalfedgeHandle {
-        self.kernel.prev_halfedge_handle(heh)
-    }
-
-    /// Get the from-vertex of a halfedge
-    pub fn from_vertex_handle(&self, heh: HalfedgeHandle) -> VertexHandle {
-        self.kernel.from_vertex_handle(heh)
-    }
-
-    /// Get the to-vertex of a halfedge
-    pub fn to_vertex_handle(&self, heh: HalfedgeHandle) -> VertexHandle {
-        self.kernel.to_vertex_handle(heh)
-    }
-
-    /// Get a halfedge from a face
-    pub fn face_halfedge_handle(&self, fh: FaceHandle) -> Option<HalfedgeHandle> {
-        self.kernel.face_halfedge_handle(fh)
-    }
-
-    /// Get a halfedge from an edge
-    pub fn edge_halfedge_handle(&self, eh: EdgeHandle, direction: usize) -> HalfedgeHandle {
-        self.kernel.edge_halfedge_handle(eh, direction)
-    }
-
-    /// Get the face handle from a halfedge
-    pub fn face_handle(&self, heh: HalfedgeHandle) -> Option<FaceHandle> {
-        self.kernel.face_handle(heh)
-    }
-
-    /// Check if a halfedge is a boundary
-    pub fn is_boundary(&self, heh: HalfedgeHandle) -> bool {
-        self.kernel.is_boundary(heh)
-    }
-
-    /// Get the vertices of a face
-    pub fn face_vertices(&self, fh: FaceHandle) -> Option<Vec<VertexHandle>> {
-        // Simplified implementation: return empty for now
-        // A full implementation would traverse the halfedge cycle
-        Some(vec![])
-    }
-}
-
-// Type aliases for compatibility with OpenMesh API
-// Note: These require lifetime parameters when used
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_add_triangle() {
-        let mut mesh = PolyMesh::new();
-        
-        // Add vertices
-        let v0 = mesh.add_vertex(glam::vec3(0.0, 0.0, 0.0));
-        let v1 = mesh.add_vertex(glam::vec3(1.0, 0.0, 0.0));
-        let v2 = mesh.add_vertex(glam::vec3(0.0, 1.0, 0.0));
-        
-        // Add face
-        let face = mesh.add_face(&[v0, v1, v2]);
-        
-        assert!(face.is_some());
-        assert_eq!(mesh.n_vertices(), 3);
-        assert_eq!(mesh.n_faces(), 1);
-    }
-
-    #[test]
-    fn test_vertex_iteration() {
-        let mut mesh = PolyMesh::new();
-        
-        mesh.add_vertex(glam::vec3(0.0, 0.0, 0.0));
-        mesh.add_vertex(glam::vec3(1.0, 0.0, 0.0));
-        mesh.add_vertex(glam::vec3(0.0, 1.0, 0.0));
-        
-        let mut count = 0;
-        for v in mesh.vertices() {
-            assert!(mesh.point(v).is_some());
-            count += 1;
-        }
-        assert_eq!(count, 3);
-    }
-}
-
-// ============================================================================
-// PolyMeshSoA - SIMD-friendly mesh using Structure of Arrays
-// ============================================================================
-
-/// PolyMesh with SoA (Structure of Arrays) layout for SIMD optimization.
-/// This provides better cache locality and enables efficient SIMD operations.
-///
-/// Memory layout:
-/// - x, y, z coordinates stored in separate arrays
-/// - Natural SIMD friendly for vector operations
-#[derive(Debug, Clone)]
 pub struct PolyMeshSoA {
     kernel: SoAKernel,
 }
@@ -683,6 +389,12 @@ impl PolyMeshSoA {
         VertexIndexIter::new(self.n_vertices())
     }
 
+    /// Iterate over all vertex handles
+    #[inline]
+    pub fn vertices(&self) -> impl Iterator<Item = VertexHandle> + '_ {
+        (0..self.n_vertices()).map(|i| VertexHandle::from_usize(i))
+    }
+
     // --- Edge operations ---
 
     /// Add an edge between two vertices
@@ -748,6 +460,12 @@ impl PolyMeshSoA {
     #[inline]
     pub fn face_indices(&self) -> FaceIndexIter {
         FaceIndexIter::new(self.n_faces())
+    }
+
+    /// Iterate over all face handles
+    #[inline]
+    pub fn faces(&self) -> impl Iterator<Item = FaceHandle> + '_ {
+        (0..self.n_faces()).map(|i| FaceHandle::from_usize(i))
     }
 
     // --- Connectivity queries ---
@@ -894,3 +612,6 @@ mod tests_soa {
         assert_eq!(cz, 0.0);
     }
 }
+
+// Re-export FastMesh for convenience
+pub use PolyMeshSoA as FastMesh;

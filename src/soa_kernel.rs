@@ -279,6 +279,12 @@ impl SoAKernel {
         self.faces.get_mut(fh.idx_usize())
     }
 
+    /// Get the halfedge handle associated with a face
+    #[inline]
+    pub fn face_halfedge_handle(&self, fh: FaceHandle) -> Option<HalfedgeHandle> {
+        self.face(fh).map(|f| f.halfedge_handle).flatten()
+    }
+
     // --- Connectivity queries ---
 
     /// Get the to-vertex of a halfedge

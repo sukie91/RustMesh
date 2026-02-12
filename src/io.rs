@@ -8,7 +8,7 @@ use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::connectivity::PolyMesh;
+use crate::connectivity::FastMesh;
 use crate::handles::{VertexHandle, FaceHandle};
 
 /// Result type for IO operations
@@ -49,7 +49,7 @@ impl From<io::Error> for IoError {
 /// - Second line: vertex_count face_count edge_count
 /// - Then: vertex lines (x y z) or (x y z r g b a)
 /// - Then: face lines (n v1 v2 ... vn) or with colors
-pub fn read_off<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
+pub fn read_off<P: AsRef<Path>>(path: P) -> IoResult<FastMesh> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
@@ -76,7 +76,7 @@ pub fn read_off<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
 
     let (n_vertices, n_faces, _n_edges) = (counts[0], counts[1], counts.get(2).copied().unwrap_or(0));
 
-    let mut mesh = PolyMesh::new();
+    let mut mesh = FastMesh::new();
     let mut vertices: Vec<VertexHandle> = Vec::with_capacity(n_vertices);
 
     // Parse vertices
@@ -147,7 +147,7 @@ pub fn read_off<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
 }
 
 /// Write OFF format file
-pub fn write_off<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
+pub fn write_off<P: AsRef<Path>>(mesh: &FastMesh, path: P) -> IoResult<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -189,12 +189,12 @@ pub fn write_off<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
 /// - f v1 v2 v3 ... (faces, vertices only)
 /// - f v1/vt1 v2/vt2 ... (faces with UVs)
 /// - f v1/vt1/vn1 ... (faces with UVs and normals)
-pub fn read_obj<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
+pub fn read_obj<P: AsRef<Path>>(path: P) -> IoResult<FastMesh> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let lines = reader.lines();
 
-    let mut mesh = PolyMesh::new();
+    let mut mesh = FastMesh::new();
     let mut vertices: Vec<VertexHandle> = Vec::new();
     let mut texture_coords: Vec<(f32, f32, f32)> = Vec::new();
     let mut normals: Vec<glam::Vec3> = Vec::new();
@@ -290,7 +290,7 @@ pub fn read_obj<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
 }
 
 /// Write OBJ format file
-pub fn write_obj<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
+pub fn write_obj<P: AsRef<Path>>(mesh: &FastMesh, path: P) -> IoResult<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -350,12 +350,12 @@ pub fn detect_format<P: AsRef<Path>>(path: P) -> Option<&'static str> {
 ///   - endloop
 /// - endfacet
 /// - endsolid <name>
-pub fn read_stl<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
+pub fn read_stl<P: AsRef<Path>>(path: P) -> IoResult<FastMesh> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let lines = reader.lines();
 
-    let mut mesh = PolyMesh::new();
+    let mut mesh = FastMesh::new();
     let mut vertices: Vec<VertexHandle> = Vec::new();
     let mut current_normal: Option<glam::Vec3> = None;
 
@@ -408,7 +408,7 @@ pub fn read_stl<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
 }
 
 /// Write STL format file (ASCII)
-pub fn write_stl<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
+pub fn write_stl<P: AsRef<Path>>(mesh: &FastMesh, path: P) -> IoResult<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -443,9 +443,9 @@ pub fn write_stl<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
 ///   - 2 bytes: attribute (unused, usually 0)
 
 /// Read binary STL format
-pub fn read_stl_binary<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
+pub fn read_stl_binary<P: AsRef<Path>>(path: P) -> IoResult<FastMesh> {
     let mut file = File::open(path)?;
-    let mut mesh = PolyMesh::new();
+    let mut mesh = FastMesh::new();
 
     // Read and discard header (80 bytes)
     let mut header = [0u8; 80];
@@ -486,7 +486,7 @@ pub fn read_stl_binary<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
 }
 
 /// Write binary STL format
-pub fn write_stl_binary<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
+pub fn write_stl_binary<P: AsRef<Path>>(mesh: &FastMesh, path: P) -> IoResult<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -521,7 +521,7 @@ pub fn write_stl_binary<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()
 }
 
 /// Read mesh file (auto-detect format)
-pub fn read_mesh<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
+pub fn read_mesh<P: AsRef<Path>>(path: P) -> IoResult<FastMesh> {
     match detect_format(&path) {
         Some("OFF") => read_off(path),
         Some("OBJ") => read_obj(path),
@@ -532,7 +532,7 @@ pub fn read_mesh<P: AsRef<Path>>(path: P) -> IoResult<PolyMesh> {
 }
 
 /// Write mesh file (auto-detect format from extension)
-pub fn write_mesh<P: AsRef<Path>>(mesh: &PolyMesh, path: P) -> IoResult<()> {
+pub fn write_mesh<P: AsRef<Path>>(mesh: &FastMesh, path: P) -> IoResult<()> {
     match detect_format(&path) {
         Some("OFF") => write_off(mesh, path),
         Some("OBJ") => write_obj(mesh, path),
@@ -642,7 +642,7 @@ endsolid mesh
 
     #[test]
     fn test_write_stl() {
-        let mesh = PolyMesh::new();
+        let mesh = FastMesh::new();
         let mut temp_file = NamedTempFile::new().unwrap();
         
         write_stl(&mesh, temp_file.path()).unwrap();
@@ -654,7 +654,7 @@ endsolid mesh
 
     #[test]
     fn test_stl_binary_read_write() {
-        let mut mesh = PolyMesh::new();
+        let mut mesh = FastMesh::new();
         let v0 = mesh.add_vertex(glam::vec3(0.0, 0.0, 0.0));
         let v1 = mesh.add_vertex(glam::vec3(1.0, 0.0, 0.0));
         let v2 = mesh.add_vertex(glam::vec3(0.0, 1.0, 0.0));
@@ -676,7 +676,7 @@ endsolid mesh
     #[test]
     fn test_stl_binary_triangle() {
         // Create a single triangle
-        let mut mesh = PolyMesh::new();
+        let mut mesh = FastMesh::new();
         let v0 = mesh.add_vertex(glam::vec3(0.0, 0.0, 0.0));
         let v1 = mesh.add_vertex(glam::vec3(1.0, 0.0, 0.0));
         let v2 = mesh.add_vertex(glam::vec3(0.0, 0.0, 1.0));

@@ -19,6 +19,12 @@ impl BaseHandle {
         Self { idx }
     }
 
+    /// Create from usize
+    #[inline]
+    pub fn from_usize(idx: usize) -> Self {
+        Self { idx: idx as u32 }
+    }
+
     /// Get the underlying index
     #[inline]
     pub fn idx(&self) -> u32 {
@@ -72,6 +78,12 @@ impl VertexHandle {
     #[inline]
     pub fn new(idx: u32) -> Self {
         Self(BaseHandle::new(idx))
+    }
+
+    /// Create from usize
+    #[inline]
+    pub fn from_usize(idx: usize) -> Self {
+        Self(BaseHandle::from_usize(idx))
     }
 
     /// Get an invalid vertex handle
@@ -267,6 +279,12 @@ impl FaceHandle {
     #[inline]
     pub fn new(idx: u32) -> Self {
         Self(BaseHandle::new(idx))
+    }
+
+    /// Create from usize
+    #[inline]
+    pub fn from_usize(idx: usize) -> Self {
+        Self(BaseHandle::from_usize(idx))
     }
 
     /// Get an invalid face handle
