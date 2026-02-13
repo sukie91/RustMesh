@@ -10,49 +10,29 @@
 
 | 功能模块 | RustMesh | OpenMesh | 说明 |
 |----------|----------|----------|------|
-| **基础网格** | ✅ | ✅ | 顶点/边/面/半边 |
 | **Property System** | ✅ | ✅ | 19个属性函数! |
-| **Normals/Colors** | ✅ | ✅ | V/F/E 法线和颜色 |
+| **基础网格** | ✅ | ✅ | 顶点/边/面/半边 |
 | **IO 格式** | | | |
-| - OBJ | ✅ | ✅ | |
-| - OFF | ✅ | ✅ | |
-| - STL | ✅ | ✅ | |
-| - PLY | ✅ | ✅ | |
-| - Binary STL | ✅ | ✅ | |
-| - Binary PLY | ✅ | ❌ | RustMesh 有, OpenMesh 无 |
+| - OBJ/OFF/STL/PLY | ✅ | ✅ | |
+| - Binary STL/PLY | ✅ | ❌ | RustMesh 有 |
 | - OM (OpenMesh) | ❌ | ✅ | |
-| **Circulators** | | | |
-| - Vertex→Vertex | ✅ | ✅ | |
-| - Vertex→Face | ✅ | ✅ | |
-| - Vertex→Edge | ✅ | ✅ | |
-| - Vertex→Halfedge | ✅ | ✅ | |
-| - Face→Vertex | ✅ | ✅ | |
-| - Face→Edge | ✅ | ✅ | |
-| - Face→Halfedge | ✅ | ✅ | |
-| - Face→Face | ✅ | ✅ | |
+| **8种 Circulators** | ✅ | ✅ | |
 | **Decimation** | ✅ | ✅ | 边折叠简化 |
 | **Quadric 误差** | ✅ | ✅ | |
 | **Smoothing** | ✅ | ✅ | Laplace + Tangential |
+| **Normals/Colors** | ✅ | ✅ | V/F/E |
+| **Mesh Repair** | ✅ | ✅ | 去重/退化面/修复 |
+| **Hole Filling** | ✅ | ✅ | Ear clipping |
+| **Subdivision** | △ | ✅ | 仅 Loop |
 
 ### ❌ 未实现功能
 
-| 功能模块 | RustMesh | OpenMesh | 优先级 |
-|----------|----------|----------|--------|
-| **Subdivision** | ❌ | ✅ | 中 |
-| - Loop Subdivision | ❌ | ✅ | |
-| - Catmull-Clark | ❌ | ✅ | |
-| - Sqrt3 | ❌ | ✅ | |
-| **Hole Filling** | ❌ | ✅ | 中 |
-| **Dualizer** | ❌ | ✅ | 低 |
-| **VDPM** | ❌ | ✅ | 低 |
-| **Property System** | ❌ | ✅ | **高** |
-| **Mesh Repair** | ❌ | ✅ | 中 |
-| - Remove duplicates | ❌ | ✅ | |
-| - Merge vertices | ❌ | ✅ | |
-| - Remove degeneracies | ❌ | ✅ | |
-| **Normals** | 部分 | ✅ | 中 |
-| **Colors** | ❌ | ✅ | 低 |
-| **Texture Coords** | ❌ | ✅ | 低 |
+| 功能模块 | 说明 |
+|----------|------|
+| **Subdivision 完整版** | 缺 Catmull-Clark, Sqrt3, Midpoint |
+| **Dualizer** | 对偶变换 |
+| **VDPM** | 渐进网格参数化 |
+| **SmartTagger** | 智能标签 |
 
 ---
 
