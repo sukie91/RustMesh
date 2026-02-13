@@ -24,4 +24,4 @@ test_data/large/
 !test_data/large/*.obj
 
 # OpenMesh source (external dependency)
-OpenMesh-11.0.0/
+Mirror/
