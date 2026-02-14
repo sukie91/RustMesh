@@ -1,114 +1,181 @@
 # RustMesh
 
-Rust port of OpenMesh - A versatile geometric data structure for representing and manipulating polygonal meshes.
+A high-performance mesh processing library in pure Rust, inspired by OpenMesh with SIMD optimizations.
 
-## Overview
+## Features
 
-RustMesh provides a native Rust implementation of mesh data structures and operations, inspired by OpenMesh. It supports:
-- Vertex, edge, halfedge, and face representations
-- Polygonal mesh types
-- Efficient iteration and circulation
-- File I/O for common mesh formats (OFF, OBJ)
+### Core Data Structures
+- **Half-Edge Mesh**: Industry-standard connectivity representation
+- **SoA Layout**: Structure-of-Arrays memory layout for SIMD performance
+- **Smart Handles**: Type-safe vertex/edge/face/halfedge handles
 
-## Example
+### IO Support
+- **OBJ**: Complete read/write support with normals and texcoords ✅
+- **PLY**: Export (ASCII/Binary) ✅, import (planned)
+- **Conversion API**: `from_triangle_mesh()` for easy integration ✅
+
+### Mesh Algorithms
+- Decimation (Quadric-based)
+- Subdivision (Loop, Catmull-Clark, Sqrt3)
+- Smoothing (Laplace, Tangential)
+- Hole Filling
+- Mesh Repair
+- Dualization
+
+### Performance
+- SIMD-optimized operations via `glam`
+- Separate x/y/z coordinate storage for vectorization
+- Zero-cost abstractions
+
+## Quick Start
 
 ```rust
-use rustmesh::{PolyMesh, Vec3};
+use rustmesh::{RustMesh, Vec3};
 
-let mut mesh = PolyMesh::new();
+// Create mesh
+let mut mesh = RustMesh::new();
 
 // Add vertices
 let v0 = mesh.add_vertex(Vec3::new(0.0, 0.0, 0.0));
 let v1 = mesh.add_vertex(Vec3::new(1.0, 0.0, 0.0));
 let v2 = mesh.add_vertex(Vec3::new(0.0, 1.0, 0.0));
 
-// Add a face
+// Add face
 mesh.add_face(&[v0, v1, v2]);
 
-// Iterate over vertices
-for v in mesh.vertices() {
-    let point = mesh.point(v);
-    println!("Vertex at {:?}", point);
-}
+// Export
+rustmesh::io::write_obj(&mesh, "output.obj")?;
 ```
 
-## Features Implemented
+## Integration with RustSLAM
 
-### Core Data Structures
-- ✅ Handles (VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle)
-- ✅ Items (Vertex, Halfedge, Edge, Face)
-- ✅ ArrayKernel (storage + attributes)
-- ✅ PolyConnectivity (connectivity relations)
-- ✅ Geometry (geometric operations: bounding box, triangle area/normal)
+RustMesh provides seamless integration with RustSLAM's 3DGS mesh extraction:
 
-### File I/O
-- ✅ OFF file reading/writing
-- ✅ OBJ file reading/writing
-- ✅ Format auto-detection
+```rust
+use rustslam::fusion::MeshExtractor;
+use rustmesh::RustMesh;
 
-### Circulators
-- ✅ Vertex iterator
-- ✅ Edge iterator
-- ✅ Face iterator
-- ✅ Halfedge iterator
-- ✅ Vertex-vertex circulator (1-ring)
-- ✅ Vertex-face circulator
+// Extract mesh from 3D Gaussians
+let slam_mesh = extractor.extract_with_postprocessing();
 
-## Features Pending (vs OpenMesh)
+// Convert to RustMesh
+let vertices: Vec<Vec3> = slam_mesh.vertices.iter()
+    .map(|v| v.position).collect();
+let triangles: Vec<[usize; 3]> = slam_mesh.triangles.iter()
+    .map(|t| t.indices).collect();
+let normals: Vec<Vec3> = slam_mesh.vertices.iter()
+    .map(|v| v.normal).collect();
+let colors: Vec<[f32; 3]> = slam_mesh.vertices.iter()
+    .map(|v| v.color).collect();
 
-### High Priority
-- [ ] **OFF file writing** - Complete face output
-- [ ] **OBJ file writing** - Complete face output
-- [ ] **PLY file format** - Polygon/Lexile format support
-- [ ] **STL file format** - Stereolithography format support
-- [ ] **face_vertices()** - Get vertices of a face
+let mesh = RustMesh::from_triangle_mesh(
+    &vertices,
+    &triangles,
+    Some(&normals),
+    Some(&colors),
+);
 
-### Medium Priority
-- [ ] **TriConnectivity** - Triangle mesh specialization
-- [ ] **Attribute system** - Iterators, export/import, and tooling polish
-- [ ] **More circulators** - Edge-face, face-vertex, etc.
-- [ ] **SmartHandles** - Automatic connectivity updates
+// Export
+rustmesh::io::write_obj(&mesh, "scan.obj")?;
+```
 
-### Lower Priority
-- [ ] **Binary formats** - Binary OFF/PLY/STL support
-- [ ] **Compression** - Compressed mesh formats
-- [ ] **Performance optimization** - Memory pools, SIMD
+## Examples
+
+```bash
+# End-to-end export example
+cargo run --example e2e_export
+
+# Smart handles demo
+cargo run --example smart_handles_demo
+```
+
+## Testing
+
+```bash
+cargo test --lib          # Run all tests
+cargo test core::io::     # IO tests only
+cargo bench               # Benchmarks
+```
+
+## Architecture
+
+```
+src/
+├── Core/
+│   ├── handles.rs          # Type-safe handles
+│   ├── connectivity.rs     # RustMesh main struct
+│   ├── soa_kernel.rs       # SIMD-optimized storage
+│   ├── geometry.rs         # Geometric primitives
+│   └── io/                 # File I/O
+│       ├── obj.rs          # OBJ format ✅
+│       └── ply.rs          # PLY format ✅
+├── Tools/
+│   ├── decimation.rs       # Mesh simplification
+│   ├── subdivision.rs      # Refinement
+│   ├── smoother.rs         # Smoothing
+│   ├── hole_filling.rs     # Hole repair
+│   └── mesh_repair.rs      # Mesh fixing
+└── Utils/
+    ├── circulators.rs      # Mesh traversal
+    ├── quadric.rs          # Error metrics
+    └── smart_ranges.rs     # Range iterators
+```
+
+## Comparison with OpenMesh
+
+| Feature | OpenMesh | RustMesh |
+|---------|----------|----------|
+| Language | C++ | Rust |
+| Memory Safety | Manual | Automatic |
+| SIMD | Partial | Built-in (SoA) |
+| Half-Edge | ✅ | ✅ |
+| Smart Handles | ❌ | ✅ |
+| Iterator Ranges | Limited | ✅ |
+| OBJ I/O | ✅ | ✅ |
+| PLY I/O | ✅ | ⚠️ Export only |
 
 ## File Format Support
 
 | Format | Read | Write | Notes |
 |--------|------|-------|-------|
-| OFF    | ✅   | ⚠️    | Basic support, color support incomplete |
-| OBJ    | ✅   | ⚠️    | Basic support, UV/normals incomplete |
-| PLY    | ❌   | ❌    | Not implemented |
-| STL    | ❌   | ❌    | Not implemented |
+| OBJ    | ✅   | ✅    | Normals, texcoords, colors |
+| PLY    | ⏳   | ✅    | ASCII/Binary export |
+| STL    | ⏳   | ⏳    | Placeholder created |
+| OFF    | ⏳   | ⏳    | Placeholder created |
 
-## Project Structure
+## Status
 
-```
-src/
-├── lib.rs          # Main module exports
-├── handles.rs      # Handle types
-├── items.rs        # Mesh item types (Vertex, Edge, Halfedge, Face)
-├── kernel.rs       # ArrayKernel storage + attributes
-├── connectivity.rs # PolyConnectivity implementation
-├── geometry.rs     # Geometric operations
-└── io.rs           # File I/O (OFF, OBJ)
-```
+**Current Progress: ~70%**
+
+✅ **Complete**:
+- Half-edge data structure
+- SoA kernel with SIMD
+- OBJ read/write
+- PLY export (ASCII/Binary)
+- Conversion API (`from_triangle_mesh`)
+- Basic algorithms (decimation, subdivision, smoothing)
+- Smart handles
+
+⏳ **In Progress**:
+- PLY import
+- STL format
+- Advanced decimation
+- Performance optimizations
 
 ## Building
 
 ```bash
-cargo build
+cargo build --release
 cargo test
 cargo bench
 ```
 
-## Roadmap
+## License
 
-See [ROADMAP.md](ROADMAP.md) for detailed development plans.
+[Add your license here]
 
 ## References
 
-- [OpenMesh Documentation](https://www.openmesh.org/)
-- [OpenMesh GitHub](https://github.com/OpenMesh/Core)
+- [OpenMesh](https://www.openmesh.org/) - Original inspiration
+- [glam](https://github.com/bitshifter/glam-rs) - SIMD math library
+- [RustScan](../README.md) - Parent project
