@@ -102,29 +102,26 @@ pub fn remove_duplicates(mesh: &mut PolyMeshSoA) -> Result<usize, MeshRepairErro
 
 /// Remap all faces using old_vh to use new_vh instead
 fn remap_vertex_in_faces(mesh: &mut PolyMeshSoA, old_vh: VertexHandle, new_vh: VertexHandle) {
-    // Get all faces adjacent to the old vertex
-    // First collect them to avoid borrow issues
-    let faces: Vec<_> = match mesh.vertex_faces(old_vh) {
-        Some(f) => f.collect(),
-        None => return,
-    };
-    
-    // Now process each face
-    for fh in faces {
-        // Get current face vertices
+    // Avoid using vertex_faces circulator here because broken connectivity can
+    // cause extremely long iterations. Scan all faces by index instead.
+    let face_handles: Vec<_> = mesh.faces().collect();
+    for fh in face_handles {
         let verts = match mesh.face_vertices(fh) {
             Some(v) => v.collect::<Vec<_>>(),
             None => continue,
         };
-        
-        // Replace old_vh with new_vh
-        let mut face_verts: Vec<VertexHandle> = verts.into_iter().map(|v| {
-            if v == old_vh { new_vh } else { v }
-        }).collect();
-        
-        // Remove the old face and add a new one
-        // Note: This is a simplified approach
-        // For production, we'd want to update the face in-place
+
+        if !verts.iter().any(|&v| v == old_vh) {
+            continue;
+        }
+
+        let face_verts: Vec<VertexHandle> = verts
+            .into_iter()
+            .map(|v| if v == old_vh { new_vh } else { v })
+            .collect();
+
+        // Remove the old face and add a new one with remapped vertices.
+        mesh.delete_face(fh);
         let _ = mesh.add_face(&face_verts);
     }
 }
@@ -323,7 +320,7 @@ fn delete_face(mesh: &mut PolyMeshSoA, fh: FaceHandle) {
         }
         
         // Clear the face handle from these halfedges
-        for heh in &halfedges {
+        for _heh in &halfedges {
             // Set face to invalid
             // Note: This requires kernel access - for now we rebuild
         }
@@ -610,6 +607,20 @@ mod tests {
         
         let merged = merge_close_vertices(&mut mesh, 0.01).unwrap();
         assert!(merged >= 0, "Should merge some close vertices");
+    }
+
+    #[test]
+    fn test_merge_close_vertices_no_hang_on_face_scan() {
+        let mut mesh = create_test_mesh();
+
+        // Add two very close vertices and a face referencing one of them.
+        let v0 = mesh.add_vertex(Vec3::new(0.001, 0.0, 0.0));
+        let v1 = mesh.add_vertex(Vec3::new(0.0009, 0.0, 0.0));
+        mesh.add_face(&[VertexHandle::new(0), v0, VertexHandle::new(1)]);
+
+        // This should complete quickly even if connectivity is imperfect.
+        let merged = merge_close_vertices(&mut mesh, 0.01).unwrap();
+        assert!(merged >= 1, "Expected at least one merge");
     }
 
     #[test]

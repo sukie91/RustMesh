@@ -20,10 +20,9 @@
 //!
 //! - Kobbelt, L. (2000). "Sqrt(3)-Subdivision". SIGGRAPH 2000.
 
-use crate::handles::{VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle};
+use crate::handles::{VertexHandle, HalfedgeHandle, FaceHandle};
 use crate::connectivity::PolyMeshSoA;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 
 /// Error types for subdivision operations
 #[derive(Debug, Clone)]
@@ -152,6 +151,7 @@ fn get_face_vertices(mesh: &PolyMeshSoA, fh: FaceHandle) -> Vec<VertexHandle> {
 }
 
 /// Get all edges of the mesh
+#[allow(dead_code)]
 fn get_all_edges(mesh: &PolyMeshSoA) -> Vec<(VertexHandle, VertexHandle)> {
     let mut edges = Vec::with_capacity(mesh.n_edges());
     let n_halfedges = mesh.n_halfedges();
@@ -208,6 +208,7 @@ fn get_vertex_neighbors(mesh: &PolyMeshSoA, vh: VertexHandle) -> Vec<VertexHandl
 }
 
 /// Get the valence (number of neighbors) of a vertex
+#[allow(dead_code)]
 fn get_vertex_valence(mesh: &PolyMeshSoA, vh: VertexHandle) -> usize {
     get_vertex_neighbors(mesh, vh).len()
 }
@@ -660,6 +661,8 @@ pub fn is_mesh_triangular(mesh: &PolyMeshSoA) -> bool {
 /// * `vh` - The vertex handle
 ///
 /// # Returns
+#[allow(dead_code)]
+
 /// * `Ok(glam::Vec3)` - The new position
 /// * `Err(SubdivisionError)` - If the vertex is invalid
 fn calculate_sqrt3_new_position(mesh: &PolyMeshSoA, vh: VertexHandle) -> SubdivisionResult<glam::Vec3> {
@@ -796,7 +799,7 @@ pub fn sqrt3_subdivide(mesh: &mut PolyMeshSoA) -> SubdivisionResult<SubdivisionS
     // Calculate statistics - note that n_faces() still includes deleted faces
     // We need to track the new face count properly
     let total_faces_after = original_faces * 3; // 3 new faces per original face
-    let new_faces_count = total_faces_after - original_faces; // new - deleted original
+    let _new_faces_count = total_faces_after - original_faces; // new - deleted original
     
     // Step 4: Update original vertex positions using Sqrt3 smoothing
     // new_pos = original_pos + Laplacian * (1/3)
@@ -901,10 +904,12 @@ fn get_face_vertices_polygonal(mesh: &PolyMeshSoA, fh: FaceHandle) -> Vec<Vertex
             }
         }
     }
+
     vertices
 }
 
 /// Get all halfedges of a face (works for n-gons)
+#[allow(dead_code)]
 fn get_face_halfedges_polygonal(mesh: &PolyMeshSoA, fh: FaceHandle) -> Vec<HalfedgeHandle> {
     let mut halfedges = Vec::new();
     if let Some(start_heh) = mesh.face_halfedge_handle(fh) {
@@ -915,17 +920,20 @@ fn get_face_halfedges_polygonal(mesh: &PolyMeshSoA, fh: FaceHandle) -> Vec<Halfe
             if current == start_heh || !current.is_valid() {
                 break;
             }
+
         }
     }
     halfedges
 }
 
 /// Get the number of vertices in a face
+#[allow(dead_code)]
 fn get_face_valence(mesh: &PolyMeshSoA, fh: FaceHandle) -> usize {
     get_face_vertices_polygonal(mesh, fh).len()
 }
 
 /// Get all edges incident to a vertex (as pairs of vertex handles)
+#[allow(dead_code)]
 fn get_incident_edges(mesh: &PolyMeshSoA, vh: VertexHandle) -> Vec<(VertexHandle, VertexHandle)> {
     let mut edges = Vec::new();
     
@@ -958,16 +966,18 @@ fn get_incident_faces(mesh: &PolyMeshSoA, vh: VertexHandle) -> Vec<FaceHandle> {
             }
             let opp = mesh.opposite_halfedge_handle(current);
             current = mesh.next_halfedge_handle(opp);
+
             if current == heh || !current.is_valid() {
                 break;
             }
         }
     }
-    
+
     faces
 }
 
 /// Check if an edge is on the boundary
+#[allow(dead_code)]
 fn is_boundary_edge(mesh: &PolyMeshSoA, v0: VertexHandle, v1: VertexHandle) -> bool {
     if let Some(heh) = mesh.halfedge_handle(v0) {
         let mut current = heh;

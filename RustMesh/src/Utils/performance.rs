@@ -5,8 +5,6 @@
 
 #[cfg(target_arch = "wasm32")]
 use std::arch::wasm32;
-#[cfg(target_arch = "aarch64")]
-use std::arch::aarch64;
 
 /// Vertex with tightly packed layout (no padding)
 #[repr(C, align(16))]
@@ -121,25 +119,25 @@ impl<'a> Iterator for ChunkedVertexIter<'a> {
 /// Compute centroid using SIMD (ARM NEON / x86 SSE)
 #[inline]
 pub fn compute_centroid_simd(vertices: &[PackedVertex]) -> (f32, f32, f32) {
-    let mut sum_x: f32 = 0.0;
-    let mut sum_y: f32 = 0.0;
-    let mut sum_z: f32 = 0.0;
+    let sum_x: f32 = 0.0;
+    let sum_y: f32 = 0.0;
+    let sum_z: f32 = 0.0;
     
     // Process 4 vertices at a time with SIMD
-    let mut i = 0;
-    let len = vertices.len();
+    let _i = 0;
+    let _len = vertices.len();
     
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        let mut acc_x = std::arch::aarch64::vaddq_f32(
+        let _acc_x = std::arch::aarch64::vaddq_f32(
             std::arch::aarch64::vreinterpretq_f32_u32(std::mem::zeroed()),
             std::arch::aarch64::vreinterpretq_f32_u32(std::mem::zeroed()),
         );
-        let mut acc_y = std::arch::aarch64::vaddq_f32(
+        let _acc_y = std::arch::aarch64::vaddq_f32(
             std::arch::aarch64::vreinterpretq_f32_u32(std::mem::zeroed()),
             std::arch::aarch64::vreinterpretq_f32_u32(std::mem::zeroed()),
         );
-        let mut acc_z = std::arch::aarch64::vaddq_f32(
+        let _acc_z = std::arch::aarch64::vaddq_f32(
             std::arch::aarch64::vreinterpretq_f32_u32(std::mem::zeroed()),
             std::arch::aarch64::vreinterpretq_f32_u32(std::mem::zeroed()),
         );

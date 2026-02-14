@@ -3,12 +3,8 @@
 //! Polygonal mesh connectivity implementation.
 //! Provides iteration and circulation over mesh elements.
 
-use std::iter::{IntoIterator, Iterator};
 use crate::handles::{VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle};
-use crate::kernel::ArrayKernel;
 use crate::soa_kernel::SoAKernel;
-use crate::items::Vertex;
-use glam::{Vec2, Vec3, Vec4};
 
 // ============================================================================
 // High-Performance Index Iterators (no Handle overhead)
@@ -67,226 +63,6 @@ impl Iterator for FaceIndexIter {
             let idx = self.current;
             self.current += 1;
             Some(idx)
-        } else {
-            None
-        }
-    }
-}
-
-// ============================================================================
-// Standard Handle-based Iterators
-// ============================================================================
-
-/// Vertex iterator - Handle-based (standard API)
-#[derive(Debug)]
-pub struct VertexIter<'a> {
-    kernel: &'a ArrayKernel,
-    current: usize,
-    end: usize,
-}
-
-impl<'a> VertexIter<'a> {
-    pub fn new(kernel: &'a ArrayKernel) -> Self {
-        Self {
-            kernel,
-            current: 0,
-            end: kernel.n_vertices(),
-        }
-    }
-}
-
-impl<'a> Iterator for VertexIter<'a> {
-    type Item = VertexHandle;
-    
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current < self.end {
-            let handle = VertexHandle::new(self.current as u32);
-            self.current += 1;
-            Some(handle)
-        } else {
-            None
-        }
-    }
-}
-
-/// Edge iterator - Optimized with cached end value
-#[derive(Debug)]
-pub struct EdgeIter<'a> {
-    kernel: &'a ArrayKernel,
-    current: usize,
-    end: usize,
-}
-
-impl<'a> EdgeIter<'a> {
-    pub fn new(kernel: &'a ArrayKernel) -> Self {
-        Self {
-            kernel,
-            current: 0,
-            end: kernel.n_edges(),
-        }
-    }
-}
-
-impl<'a> Iterator for EdgeIter<'a> {
-    type Item = EdgeHandle;
-    
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current < self.end {
-            let handle = EdgeHandle::new(self.current as u32);
-            self.current += 1;
-            Some(handle)
-        } else {
-            None
-        }
-    }
-}
-
-/// Face iterator - Optimized with cached end value
-#[derive(Debug)]
-pub struct FaceIter<'a> {
-    kernel: &'a ArrayKernel,
-    current: usize,
-    end: usize,
-}
-
-impl<'a> FaceIter<'a> {
-    pub fn new(kernel: &'a ArrayKernel) -> Self {
-        Self {
-            kernel,
-            current: 0,
-            end: kernel.n_faces(),
-        }
-    }
-}
-
-impl<'a> Iterator for FaceIter<'a> {
-    type Item = FaceHandle;
-    
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current < self.end {
-            let handle = FaceHandle::new(self.current as u32);
-            self.current += 1;
-            Some(handle)
-        } else {
-            None
-        }
-    }
-}
-
-/// Halfedge iterator
-#[derive(Debug)]
-pub struct HalfedgeIter<'a> {
-    kernel: &'a ArrayKernel,
-    current: usize,
-    total: usize,
-}
-
-impl<'a> HalfedgeIter<'a> {
-    pub fn new(kernel: &'a ArrayKernel) -> Self {
-        let total = kernel.n_halfedges();
-        Self {
-            kernel,
-            current: 0,
-            total,
-        }
-    }
-}
-
-impl<'a> Iterator for HalfedgeIter<'a> {
-    type Item = HalfedgeHandle;
-    
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current < self.total {
-            let handle = HalfedgeHandle::new(self.current as u32);
-            self.current += 1;
-            Some(handle)
-        } else {
-            None
-        }
-    }
-}
-
-/// Circulator for vertices around a vertex (1-ring)
-pub struct VertexVertexCirculator<'a> {
-    kernel: &'a ArrayKernel,
-    center: VertexHandle,
-    current: Option<HalfedgeHandle>,
-    started: bool,
-}
-
-impl<'a> VertexVertexCirculator<'a> {
-    pub(crate) fn new(kernel: &'a ArrayKernel, vh: VertexHandle) -> Self {
-        let start_heh = kernel.halfedge_handle(vh);
-        Self {
-            kernel,
-            center: vh,
-            current: start_heh,
-            started: false,
-        }
-    }
-}
-
-impl<'a> Iterator for VertexVertexCirculator<'a> {
-    type Item = VertexHandle;
-    
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(heh) = self.current {
-            let next_vh = self.kernel.to_vertex_handle(heh);
-            
-            // Move to next halfedge around the vertex
-            // For a full implementation, we'd need proper prev/next linkage
-            self.current = Some(self.kernel.opposite_halfedge_handle(heh));
-            
-            // Skip if we've gone full circle
-            if Some(next_vh) == self.kernel.halfedge_handle(self.center).map(|h| self.kernel.to_vertex_handle(h)) {
-                if self.started {
-                    return None;
-                }
-            }
-            self.started = true;
-            
-            Some(next_vh)
-        } else {
-            None
-        }
-    }
-}
-
-/// Vertex-face circulator
-pub struct VertexFaceCirculator<'a> {
-    kernel: &'a ArrayKernel,
-    center: VertexHandle,
-    current: Option<HalfedgeHandle>,
-}
-
-impl<'a> VertexFaceCirculator<'a> {
-    pub(crate) fn new(kernel: &'a ArrayKernel, vh: VertexHandle) -> Self {
-        let start_heh = kernel.halfedge_handle(vh);
-        Self {
-            kernel,
-            center: vh,
-            current: start_heh,
-        }
-    }
-}
-
-impl<'a> Iterator for VertexFaceCirculator<'a> {
-    type Item = FaceHandle;
-    
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(heh) = self.current {
-            // Get face from halfedge
-            let fh = self.kernel.face_handle(heh);
-            
-            // Move to next halfedge around vertex
-            // In a full implementation, use proper circulation
-            self.current = Some(self.kernel.opposite_halfedge_handle(heh));
-            
-            fh
         } else {
             None
         }
@@ -445,8 +221,12 @@ impl PolyMeshSoA {
             let start = vertices[i];
             let end = vertices[(i + 1) % n];
             
-            // Create the halfedge from end to start
-            let he = self.add_edge(end, start);
+            // Create the halfedge from start to end
+            let he = self.add_edge(start, end);
+            // The halfedge used by this face must be free (no face assigned yet)
+            if self.kernel.face_handle(he).is_some() {
+                return None;
+            }
             halfedges.push(he);
         }
 
@@ -456,8 +236,8 @@ impl PolyMeshSoA {
             let curr = halfedges[i];
             let next_in_face = halfedges[(i + 1) % n];
             
-            // Only set next if not already set (preserve existing for shared edges)
             self.kernel.set_next_halfedge_handle(curr, next_in_face);
+            self.kernel.set_prev_halfedge_handle(next_in_face, curr);
         }
 
         let fh = self.kernel.add_face(Some(halfedges[0]));
@@ -713,8 +493,8 @@ impl PolyMeshSoA {
         }
         
         // Check: if both vertices are boundary, edge should also be boundary
-        let v0_boundary = self.is_boundary(self.halfedge_handle(v0).unwrap_or(HalfedgeHandle::new(u32::MAX)));
-        let v1_boundary = self.is_boundary(self.halfedge_handle(v1).unwrap_or(HalfedgeHandle::new(u32::MAX)));
+        let _v0_boundary = self.is_boundary(self.halfedge_handle(v0).unwrap_or(HalfedgeHandle::new(u32::MAX)));
+        let _v1_boundary = self.is_boundary(self.halfedge_handle(v1).unwrap_or(HalfedgeHandle::new(u32::MAX)));
         
         // Simplified check: avoid collapsing boundary edges between two boundary vertices
         // (This is a simplified version of OpenMesh's check)

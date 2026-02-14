@@ -3,7 +3,6 @@
 //! Status flags for mesh elements (deleted, selected, locked, etc.)
 //! Based on OpenMesh's StatusSet concept.
 
-use crate::handles::{VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
 
 /// Status flags for mesh elements

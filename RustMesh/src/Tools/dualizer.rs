@@ -134,6 +134,7 @@ fn face_centroid(mesh: &PolyMeshSoA, fh: FaceHandle) -> Vec3 {
 }
 
 /// Get all vertices of a face
+#[allow(dead_code)]
 fn get_face_vertices(mesh: &PolyMeshSoA, fh: FaceHandle) -> Vec<VertexHandle> {
     let mut vertices = Vec::new();
     
@@ -280,7 +281,7 @@ pub fn dualize(mesh: &mut PolyMeshSoA) -> DualResult<()> {
         if dual_face_vertices.len() >= 3 {
             // Create the dual face in the mesh
             // Convert dual vertex indices to VertexHandles
-            let dual_vhandles: Vec<VertexHandle> = dual_face_vertices
+            let _dual_vhandles: Vec<VertexHandle> = dual_face_vertices
                 .iter()
                 .map(|&idx| VertexHandle::new(idx as u32))
                 .collect();
@@ -294,7 +295,7 @@ pub fn dualize(mesh: &mut PolyMeshSoA) -> DualResult<()> {
             dual_face_centroid /= dual_face_vertices.len() as f32;
             
             // Add vertex for the dual face at its centroid
-            let dual_fv_idx = dual_mesh.n_vertices();
+            let _dual_fv_idx = dual_mesh.n_vertices();
             dual_mesh.add_vertex(dual_face_centroid);
             
             // Now we need to create edges connecting this dual face vertex to the
@@ -387,7 +388,7 @@ pub fn dualize(mesh: &mut PolyMeshSoA) -> DualResult<()> {
             
             if dual_mesh_new.add_face(&face_verts).is_none() {
                 // Try with reversed order if face creation failed
-                let mut reversed: Vec<VertexHandle> = ordered_dual_vertices.into_iter().rev().collect();
+                let reversed: Vec<VertexHandle> = ordered_dual_vertices.into_iter().rev().collect();
                 let _ = dual_mesh_new.add_face(&reversed);
             }
         }
@@ -474,7 +475,7 @@ pub fn dual_mesh(mesh: &PolyMeshSoA) -> DualResult<PolyMeshSoA> {
             let face_verts: Vec<VertexHandle> = ordered_dual_vertices.iter().copied().collect();
             
             if dual.add_face(&face_verts).is_none() {
-                let mut reversed: Vec<VertexHandle> = ordered_dual_vertices.into_iter().rev().collect();
+                let reversed: Vec<VertexHandle> = ordered_dual_vertices.into_iter().rev().collect();
                 let _ = dual.add_face(&reversed);
             }
         }

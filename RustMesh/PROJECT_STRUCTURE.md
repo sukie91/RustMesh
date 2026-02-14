@@ -14,7 +14,7 @@ RustMesh 是 OpenMesh 11.0.0 的 Rust 语言重写版本，提供通用的几何
     │   ├── lib.rs             # 主模块入口
     │   ├── handles.rs         # 句柄类型定义
     │   ├── items.rs           # 网格元素定义
-    │   ├── kernel.rs          # 核心存储 (ArrayKernel)
+    │   ├── kernel.rs          # 核心存储 + 属性 (ArrayKernel)
     │   ├── connectivity.rs    # 连接关系 (PolyConnectivity)
     │   └── geometry.rs        # 几何运算
     └── benches/
@@ -36,7 +36,7 @@ RustMesh 是 OpenMesh 11.0.0 的 Rust 语言重写版本，提供通用的几何
 - `Face` - 面数据（半边引用）
 
 ### 3. Kernel (src/kernel.rs)
-- `ArrayKernel` - 使用 Vec 存储网格元素
+- `ArrayKernel` - 使用 Vec 存储网格元素 + 内建属性系统
 - `PropertyContainer` - 属性容器
 - `StatusInfo` - 状态标志
 
@@ -63,8 +63,7 @@ RustMesh 是 OpenMesh 11.0.0 的 Rust 语言重写版本，提供通用的几何
 - 单元测试 (12/12 通过)
 
 ### ⏳ 待实现
-- TriConnectivity (三角形网格特化)
-- AttribKernel (属性管理)
+- TriConnectivity (三角形网格特化完善)
 - IO 模块 (OBJ, OFF, STL, PLY 读写)
 - 完整的半边结构 (prev/next linkage)
 - 垃圾回收机制

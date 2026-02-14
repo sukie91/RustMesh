@@ -37,7 +37,7 @@ for v in mesh.vertices() {
 ### Core Data Structures
 - ✅ Handles (VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle)
 - ✅ Items (Vertex, Halfedge, Edge, Face)
-- ✅ ArrayKernel (storage layer)
+- ✅ ArrayKernel (storage + attributes)
 - ✅ PolyConnectivity (connectivity relations)
 - ✅ Geometry (geometric operations: bounding box, triangle area/normal)
 
@@ -65,7 +65,7 @@ for v in mesh.vertices() {
 
 ### Medium Priority
 - [ ] **TriConnectivity** - Triangle mesh specialization
-- [ ] **AttribKernel** - Attribute management (normals, colors, texcoords)
+- [ ] **Attribute system** - Iterators, export/import, and tooling polish
 - [ ] **More circulators** - Edge-face, face-vertex, etc.
 - [ ] **SmartHandles** - Automatic connectivity updates
 
@@ -90,7 +90,7 @@ src/
 ├── lib.rs          # Main module exports
 ├── handles.rs      # Handle types
 ├── items.rs        # Mesh item types (Vertex, Edge, Halfedge, Face)
-├── kernel.rs       # ArrayKernel storage layer
+├── kernel.rs       # ArrayKernel storage + attributes
 ├── connectivity.rs # PolyConnectivity implementation
 ├── geometry.rs     # Geometric operations
 └── io.rs           # File I/O (OFF, OBJ)

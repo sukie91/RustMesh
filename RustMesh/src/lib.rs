@@ -18,11 +18,11 @@
 pub use handles::{VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle, BaseHandle};
 pub use items::{Vertex, Halfedge, Edge, Face};
 pub use soa_kernel::SoAKernel;
+pub use attrib_soa_kernel::AttribSoAKernel;
 pub use connectivity::PolyMeshSoA as RustMesh;
-pub use tri_connectivity::TriMesh;
 pub use test_data::*;
 pub use geometry::*;
-pub use io::*;
+// pub use io::*;  // IO module not yet implemented
 pub use status::{StatusFlags, StatusSet};
 pub use circulators::*;
 pub use quadric::QuadricT;
@@ -50,11 +50,9 @@ pub use glam::Vec3;
 pub mod core {
     pub mod handles;
     pub mod items;
-    pub mod kernel;
     pub mod soa_kernel;
+    pub mod attrib_soa_kernel;
     pub mod connectivity;
-    pub mod tri_connectivity;
-    pub mod attrib_kernel;
     pub mod geometry;
     pub mod io;
 }
@@ -62,12 +60,11 @@ pub mod core {
 // Re-export for convenience
 mod handles { pub use crate::core::handles::*; }
 mod items { pub use crate::core::items::*; }
-mod kernel { pub use crate::core::kernel::*; }
 mod soa_kernel { pub use crate::core::soa_kernel::*; }
+mod attrib_soa_kernel { pub use crate::core::attrib_soa_kernel::*; }
 mod connectivity { pub use crate::core::connectivity::*; }
-mod tri_connectivity { pub use crate::core::tri_connectivity::*; }
-mod attrib_kernel { pub use crate::core::attrib_kernel::*; }
 mod geometry { pub use crate::core::geometry::*; }
+#[allow(unused_imports)]
 mod io { pub use crate::core::io::*; }
 
 // Utils modules (对应 OpenMesh/Core/Utils)

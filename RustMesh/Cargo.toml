@@ -23,6 +23,10 @@ itertools = "0.13"
 # 测试工具
 rand = "0.8"
 
+[features]
+default = []
+parallel = []
+
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3"

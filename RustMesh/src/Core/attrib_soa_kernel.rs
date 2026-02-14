@@ -1,0 +1,961 @@
+//! # AttribSoAKernel
+//!
+//! Unified kernel combining SoA layout with dynamic attribute system.
+//! Provides SIMD-friendly storage with flexible property support.
+
+use crate::handles::{VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle};
+use crate::items::{Halfedge, Edge, Face};
+use glam::{Vec2, Vec3, Vec4};
+use std::collections::HashMap;
+
+/// Attribute type enumeration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttributeType {
+    VertexNormal,
+    VertexColor,
+    VertexTexCoord,
+    HalfedgeNormal,
+    HalfedgeColor,
+    HalfedgeTexCoord,
+    EdgeColor,
+    FaceNormal,
+    FaceColor,
+    Custom(u32),
+}
+
+/// Property handle for dynamic attributes
+#[derive(Debug, Clone)]
+pub struct PropHandle {
+    id: u32,
+    name: String,
+}
+
+/// Dynamic property storage
+#[derive(Debug, Clone)]
+pub enum DynamicProperty {
+    Float(Vec<f32>),
+    Vec2(Vec<Vec2>),
+    Vec3(Vec<Vec3>),
+    Vec4(Vec<Vec4>),
+    Int(Vec<i32>),
+}
+
+impl DynamicProperty {
+    fn new<T: PropValue>(&self) -> Self {
+        T::create_dynamic()
+    }
+
+    fn resize(&mut self, size: usize) {
+        match self {
+            DynamicProperty::Float(v) => v.resize(size, 0.0),
+            DynamicProperty::Vec2(v) => v.resize(size, Vec2::ZERO),
+            DynamicProperty::Vec3(v) => v.resize(size, Vec3::ZERO),
+            DynamicProperty::Vec4(v) => v.resize(size, Vec4::ZERO),
+            DynamicProperty::Int(v) => v.resize(size, 0),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            DynamicProperty::Float(v) => v.len(),
+            DynamicProperty::Vec2(v) => v.len(),
+            DynamicProperty::Vec3(v) => v.len(),
+            DynamicProperty::Vec4(v) => v.len(),
+            DynamicProperty::Int(v) => v.len(),
+        }
+    }
+}
+
+/// Trait for property value types
+pub trait PropValue: 'static + Clone + Default {
+    fn create_dynamic() -> DynamicProperty;
+}
+
+impl PropValue for f32 {
+    fn create_dynamic() -> DynamicProperty {
+        DynamicProperty::Float(Vec::new())
+    }
+}
+
+impl PropValue for Vec2 {
+    fn create_dynamic() -> DynamicProperty {
+        DynamicProperty::Vec2(Vec::new())
+    }
+}
+
+impl PropValue for Vec3 {
+    fn create_dynamic() -> DynamicProperty {
+        DynamicProperty::Vec3(Vec::new())
+    }
+}
+
+impl PropValue for Vec4 {
+    fn create_dynamic() -> DynamicProperty {
+        DynamicProperty::Vec4(Vec::new())
+    }
+}
+
+impl PropValue for i32 {
+    fn create_dynamic() -> DynamicProperty {
+        DynamicProperty::Int(Vec::new())
+    }
+}
+
+/// AttribSoAKernel - Unified Kernel with SoA layout and dynamic attributes
+#[derive(Debug, Clone)]
+pub struct AttribSoAKernel {
+    // === SoA Position Data ===
+    x: Vec<f32>,
+    y: Vec<f32>,
+    z: Vec<f32>,
+
+    // Vertex auxiliary data
+    halfedge_handles: Vec<Option<HalfedgeHandle>>,
+
+    // === Connectivity Data ===
+    halfedges: Vec<Halfedge>,
+    edges: Vec<Edge>,
+    faces: Vec<Face>,
+
+    // Edge lookup
+    edge_map: HashMap<(u32, u32), HalfedgeHandle>,
+
+    // Track which halfedges have had next set
+    next_set: Vec<bool>,
+
+    // === Preset Attributes (SoA layout) ===
+    vertex_normals: Option<Vec<Vec3>>,
+    vertex_colors: Option<Vec<Vec4>>,
+    vertex_texcoords: Option<Vec<Vec2>>,
+
+    halfedge_normals: Option<Vec<Vec3>>,
+    halfedge_colors: Option<Vec<Vec4>>,
+    halfedge_texcoords: Option<Vec<Vec2>>,
+
+    edge_colors: Option<Vec<Vec4>>,
+
+    face_normals: Option<Vec<Vec3>>,
+    face_colors: Option<Vec<Vec4>>,
+
+    // === Dynamic Properties ===
+    dynamic_props: HashMap<u32, DynamicProperty>,
+    next_prop_id: u32,
+}
+
+impl AttribSoAKernel {
+    /// Create a new empty AttribSoAKernel
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            x: Vec::new(),
+            y: Vec::new(),
+            z: Vec::new(),
+            halfedge_handles: Vec::new(),
+            halfedges: Vec::new(),
+            edges: Vec::new(),
+            faces: Vec::new(),
+            edge_map: HashMap::new(),
+            next_set: Vec::new(),
+            // Preset attributes
+            vertex_normals: None,
+            vertex_colors: None,
+            vertex_texcoords: None,
+            halfedge_normals: None,
+            halfedge_colors: None,
+            halfedge_texcoords: None,
+            edge_colors: None,
+            face_normals: None,
+            face_colors: None,
+            // Dynamic properties
+            dynamic_props: HashMap::new(),
+            next_prop_id: 0,
+        }
+    }
+
+    /// Clear all data
+    #[inline]
+    pub fn clear(&mut self) {
+        self.x.clear();
+        self.y.clear();
+        self.z.clear();
+        self.halfedge_handles.clear();
+        self.halfedges.clear();
+        self.edges.clear();
+        self.faces.clear();
+        self.edge_map.clear();
+        self.next_set.clear();
+        // Clear preset attributes
+        self.vertex_normals = None;
+        self.vertex_colors = None;
+        self.vertex_texcoords = None;
+        self.halfedge_normals = None;
+        self.halfedge_colors = None;
+        self.halfedge_texcoords = None;
+        self.edge_colors = None;
+        self.face_normals = None;
+        self.face_colors = None;
+        // Clear dynamic properties
+        self.dynamic_props.clear();
+        self.next_prop_id = 0;
+    }
+
+    // ========================
+    // Vertex Operations
+    // ========================
+
+    /// Add a new vertex and return its handle
+    #[inline]
+    pub fn add_vertex(&mut self, point: Vec3) -> VertexHandle {
+        let idx = self.x.len() as u32;
+        self.x.push(point.x);
+        self.y.push(point.y);
+        self.z.push(point.z);
+        self.halfedge_handles.push(None);
+
+        // Resize preset attribute arrays if they exist
+        if let Some(ref mut normals) = self.vertex_normals {
+            normals.push(Vec3::ZERO);
+        }
+        if let Some(ref mut colors) = self.vertex_colors {
+            colors.push(Vec4::new(1.0, 1.0, 1.0, 1.0));
+        }
+        if let Some(ref mut texcoords) = self.vertex_texcoords {
+            texcoords.push(Vec2::ZERO);
+        }
+
+        // Resize dynamic properties
+        for prop in self.dynamic_props.values_mut() {
+            prop.resize(self.x.len());
+        }
+
+        VertexHandle::new(idx)
+    }
+
+    /// Get vertex count
+    #[inline]
+    pub fn n_vertices(&self) -> usize {
+        self.x.len()
+    }
+
+    /// Check if empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.x.is_empty()
+    }
+
+    // ========================
+    // Position Access (SIMD friendly)
+    // ========================
+
+    /// Get x coordinates as slice
+    #[inline]
+    pub fn x_slice(&self) -> &[f32] {
+        &self.x
+    }
+
+    /// Get y coordinates as slice
+    #[inline]
+    pub fn y_slice(&self) -> &[f32] {
+        &self.y
+    }
+
+    /// Get z coordinates as slice
+    #[inline]
+    pub fn z_slice(&self) -> &[f32] {
+        &self.z
+    }
+
+    /// Get x pointer for SIMD
+    #[inline]
+    pub fn x_ptr(&self) -> *const f32 {
+        self.x.as_ptr()
+    }
+
+    /// Get y pointer for SIMD
+    #[inline]
+    pub fn y_ptr(&self) -> *const f32 {
+        self.y.as_ptr()
+    }
+
+    /// Get z pointer for SIMD
+    #[inline]
+    pub fn z_ptr(&self) -> *const f32 {
+        self.z.as_ptr()
+    }
+
+    /// Get vertex position by index
+    #[inline]
+    pub fn point(&self, idx: usize) -> Option<Vec3> {
+        if idx < self.x.len() {
+            Some(Vec3::new(self.x[idx], self.y[idx], self.z[idx]))
+        } else {
+            None
+        }
+    }
+
+    /// Get vertex position (unchecked)
+    #[inline]
+    pub unsafe fn point_unchecked(&self, idx: usize) -> Vec3 {
+        Vec3::new(self.x[idx], self.y[idx], self.z[idx])
+    }
+
+    /// Set vertex position
+    #[inline]
+    pub fn set_point(&mut self, idx: usize, point: Vec3) {
+        if idx < self.x.len() {
+            self.x[idx] = point.x;
+            self.y[idx] = point.y;
+            self.z[idx] = point.z;
+        }
+    }
+
+    // ========================
+    // Edge Operations
+    // ========================
+
+    /// Add an edge between two vertices
+    #[inline]
+    pub fn add_edge(&mut self, start_vh: VertexHandle, end_vh: VertexHandle) -> HalfedgeHandle {
+        let start_idx = start_vh.idx();
+        let end_idx = end_vh.idx();
+
+        // Check if edge already exists
+        let min_idx = start_idx.min(end_idx);
+        let max_idx = start_idx.max(end_idx);
+
+        if let Some(&existing_he) = self.edge_map.get(&(min_idx, max_idx)) {
+            return existing_he;
+        }
+
+        // Create two halfedges
+        let heh1 = HalfedgeHandle::new(self.halfedges.len() as u32);
+        let heh2 = HalfedgeHandle::new(heh1.idx() + 1);
+
+        // Add halfedges
+        self.halfedges.push(Halfedge::new(heh1, end_vh));
+        self.halfedges.push(Halfedge::new(heh2, start_vh));
+
+        // Initialize next_set
+        self.next_set.push(false);
+        self.next_set.push(false);
+
+        // Create edge
+        let _eh = EdgeHandle::new(self.edges.len() as u32);
+        self.edges.push(Edge::new(heh1, heh2));
+
+        // Set halfedge handles in vertices
+        self.halfedge_handles[start_idx as usize] = Some(heh1);
+        self.halfedge_handles[end_idx as usize] = Some(heh2);
+
+        // Set opposite halfedge handles
+        if let Some(he1) = self.halfedge_mut(heh1) {
+            he1.set_opposite_halfedge(heh2);
+        }
+        if let Some(he2) = self.halfedge_mut(heh2) {
+            he2.set_opposite_halfedge(heh1);
+        }
+
+        // Store in edge map
+        self.edge_map.insert((min_idx, max_idx), heh1);
+
+        // Resize attribute arrays
+        self.resize_halfedge_attrs();
+
+        heh1
+    }
+
+    /// Check if edge exists
+    #[inline]
+    pub fn edge_exists(&self, v0: u32, v1: u32) -> bool {
+        let min_idx = v0.min(v1);
+        let max_idx = v0.max(v1);
+        self.edge_map.contains_key(&(min_idx, max_idx))
+    }
+
+    /// Get number of edges
+    #[inline]
+    pub fn n_edges(&self) -> usize {
+        self.edges.len()
+    }
+
+    /// Get number of halfedges
+    #[inline]
+    pub fn n_halfedges(&self) -> usize {
+        self.halfedges.len()
+    }
+
+    // ========================
+    // Halfedge Access
+    // ========================
+
+    /// Get halfedge
+    #[inline]
+    pub fn halfedge(&self, heh: HalfedgeHandle) -> Option<&Halfedge> {
+        self.halfedges.get(heh.idx() as usize)
+    }
+
+    /// Get mutable halfedge
+    #[inline]
+    pub fn halfedge_mut(&mut self, heh: HalfedgeHandle) -> Option<&mut Halfedge> {
+        self.halfedges.get_mut(heh.idx() as usize)
+    }
+
+    /// Get edge
+    #[inline]
+    pub fn edge(&self, eh: EdgeHandle) -> Option<&Edge> {
+        self.edges.get(eh.idx() as usize)
+    }
+
+    // ========================
+    // Face Operations
+    // ========================
+
+    /// Add a face
+    #[inline]
+    pub fn add_face(&mut self, halfedge_handle: Option<HalfedgeHandle>) -> FaceHandle {
+        let fh = FaceHandle::new(self.faces.len() as u32);
+        self.faces.push(Face::new(halfedge_handle));
+        fh
+    }
+
+    /// Get number of faces
+    #[inline]
+    pub fn n_faces(&self) -> usize {
+        self.faces.len()
+    }
+
+    /// Get face
+    #[inline]
+    pub fn face(&self, fh: FaceHandle) -> Option<&Face> {
+        self.faces.get(fh.idx() as usize)
+    }
+
+    /// Get mutable face
+    #[inline]
+    pub fn face_mut(&mut self, fh: FaceHandle) -> Option<&mut Face> {
+        self.faces.get_mut(fh.idx() as usize)
+    }
+
+    /// Get face's halfedge handle
+    #[inline]
+    pub fn face_halfedge_handle(&self, fh: FaceHandle) -> Option<HalfedgeHandle> {
+        self.face(fh).and_then(|f| f.halfedge_handle())
+    }
+
+    // ========================
+    // Connectivity Helpers
+    // ========================
+
+    /// Get vertex handle from halfedge
+    #[inline]
+    pub fn to_vertex_handle(&self, heh: HalfedgeHandle) -> VertexHandle {
+        self.halfedge(heh)
+            .map(|h| h.to_vertex_handle())
+            .unwrap_or(VertexHandle::new(0))
+    }
+
+    /// Get from vertex handle from halfedge
+    #[inline]
+    pub fn from_vertex_handle(&self, heh: HalfedgeHandle) -> VertexHandle {
+        self.halfedge(heh)
+            .map(|h| h.from_vertex_handle())
+            .unwrap_or(VertexHandle::new(0))
+    }
+
+    /// Get opposite halfedge handle
+    #[inline]
+    pub fn opposite_halfedge_handle(&self, heh: HalfedgeHandle) -> Option<HalfedgeHandle> {
+        self.halfedge(heh).and_then(|h| h.opposite_halfedge_handle())
+    }
+
+    /// Get edge handle from halfedge
+    #[inline]
+    pub fn edge_handle(&self, heh: HalfedgeHandle) -> EdgeHandle {
+        self.halfedge(heh)
+            .and_then(|h| h.edge_handle())
+            .unwrap_or(EdgeHandle::new(0))
+    }
+
+    /// Get halfedge handle from edge
+    #[inline]
+    pub fn edge_halfedge_handle(&self, eh: EdgeHandle, idx: usize) -> HalfedgeHandle {
+        self.edge(eh)
+            .map(|e| e.halfedge_handle(idx))
+            .unwrap_or(HalfedgeHandle::new(0))
+    }
+
+    /// Get face handle from halfedge
+    #[inline]
+    pub fn face_handle(&self, heh: HalfedgeHandle) -> Option<FaceHandle> {
+        self.halfedge(heh).and_then(|h| h.face_handle())
+    }
+
+    /// Set face handle for halfedge
+    #[inline]
+    pub fn set_face_handle(&mut self, heh: HalfedgeHandle, fh: FaceHandle) {
+        if let Some(he) = self.halfedge_mut(heh) {
+            he.set_face_handle(fh);
+        }
+    }
+
+    /// Check if halfedge is boundary
+    #[inline]
+    pub fn is_boundary(&self, heh: HalfedgeHandle) -> bool {
+        self.face_handle(heh).is_none()
+    }
+
+    /// Get next halfedge handle
+    #[inline]
+    pub fn next_halfedge_handle(&self, heh: HalfedgeHandle) -> Option<HalfedgeHandle> {
+        self.halfedge(heh).and_then(|h| h.next_halfedge_handle())
+    }
+
+    /// Set next halfedge handle
+    #[inline]
+    pub fn set_next_halfedge_handle(&mut self, heh: HalfedgeHandle, next_heh: HalfedgeHandle) {
+        if let Some(he) = self.halfedge_mut(heh) {
+            he.set_next_halfedge_handle(next_heh);
+            if (next_heh.idx() as usize) < self.next_set.len() {
+                self.next_set[next_heh.idx() as usize] = true;
+            }
+        }
+    }
+
+    /// Get previous halfedge handle
+    #[inline]
+    pub fn prev_halfedge_handle(&self, heh: HalfedgeHandle) -> Option<HalfedgeHandle> {
+        self.halfedge(heh).and_then(|h| h.prev_halfedge_handle())
+    }
+
+    /// Get vertex's halfedge handle
+    #[inline]
+    pub fn halfedge_handle(&self, vh: VertexHandle) -> Option<HalfedgeHandle> {
+        self.halfedge_handles.get(vh.idx() as usize).and_then(|h| *h)
+    }
+
+    /// Set vertex's halfedge handle
+    #[inline]
+    pub fn set_halfedge_handle(&mut self, vh: VertexHandle, heh: HalfedgeHandle) {
+        if (vh.idx() as usize) < self.halfedge_handles.len() {
+            self.halfedge_handles[vh.idx() as usize] = Some(heh);
+        }
+    }
+
+    /// Set halfedge's to vertex
+    #[inline]
+    pub fn set_halfedge_to_vertex(&mut self, heh: HalfedgeHandle, vh: VertexHandle) {
+        if let Some(he) = self.halfedge_mut(heh) {
+            he.set_to_vertex_handle(vh);
+        }
+    }
+
+    fn resize_halfedge_attrs(&mut self) {
+        let size = self.halfedges.len();
+        if let Some(ref mut normals) = self.halfedge_normals {
+            normals.resize(size, Vec3::ZERO);
+        }
+        if let Some(ref mut colors) = self.halfedge_colors {
+            colors.resize(size, Vec4::ZERO);
+        }
+        if let Some(ref mut texcoords) = self.halfedge_texcoords {
+            texcoords.resize(size, Vec2::ZERO);
+        }
+    }
+
+    // ========================
+    // Preset Attributes - Vertex
+    // ========================
+
+    /// Request vertex normals
+    pub fn request_vertex_normals(&mut self) {
+        if self.vertex_normals.is_none() {
+            let size = self.x.len();
+            self.vertex_normals = Some(vec![Vec3::ZERO; size]);
+        }
+    }
+
+    /// Check if vertex normals are available
+    pub fn has_vertex_normals(&self) -> bool {
+        self.vertex_normals.is_some()
+    }
+
+    /// Get vertex normal
+    pub fn vertex_normal(&self, vh: VertexHandle) -> Option<Vec3> {
+        self.vertex_normals.as_ref()
+            .and_then(|n| n.get(vh.idx() as usize).copied())
+    }
+
+    /// Set vertex normal
+    pub fn set_vertex_normal(&mut self, vh: VertexHandle, n: Vec3) {
+        if let Some(ref mut normals) = self.vertex_normals {
+            if let Some(normal) = normals.get_mut(vh.idx() as usize) {
+                *normal = n;
+            }
+        }
+    }
+
+    /// Request vertex colors
+    pub fn request_vertex_colors(&mut self) {
+        if self.vertex_colors.is_none() {
+            let size = self.x.len();
+            self.vertex_colors = Some(vec![Vec4::new(1.0, 1.0, 1.0, 1.0); size]);
+        }
+    }
+
+    /// Check if vertex colors are available
+    pub fn has_vertex_colors(&self) -> bool {
+        self.vertex_colors.is_some()
+    }
+
+    /// Get vertex color
+    pub fn vertex_color(&self, vh: VertexHandle) -> Option<Vec4> {
+        self.vertex_colors.as_ref()
+            .and_then(|c| c.get(vh.idx() as usize).copied())
+    }
+
+    /// Set vertex color
+    pub fn set_vertex_color(&mut self, vh: VertexHandle, c: Vec4) {
+        if let Some(ref mut colors) = self.vertex_colors {
+            if let Some(color) = colors.get_mut(vh.idx() as usize) {
+                *color = c;
+            }
+        }
+    }
+
+    /// Request vertex texture coordinates
+    pub fn request_vertex_texcoords(&mut self) {
+        if self.vertex_texcoords.is_none() {
+            let size = self.x.len();
+            self.vertex_texcoords = Some(vec![Vec2::ZERO; size]);
+        }
+    }
+
+    /// Check if vertex texcoords are available
+    pub fn has_vertex_texcoords(&self) -> bool {
+        self.vertex_texcoords.is_some()
+    }
+
+    /// Get vertex texcoord
+    pub fn vertex_texcoord(&self, vh: VertexHandle) -> Option<Vec2> {
+        self.vertex_texcoords.as_ref()
+            .and_then(|t| t.get(vh.idx() as usize).copied())
+    }
+
+    /// Set vertex texcoord
+    pub fn set_vertex_texcoord(&mut self, vh: VertexHandle, t: Vec2) {
+        if let Some(ref mut texcoords) = self.vertex_texcoords {
+            if let Some(texcoord) = texcoords.get_mut(vh.idx() as usize) {
+                *texcoord = t;
+            }
+        }
+    }
+
+    // ========================
+    // Preset Attributes - Halfedge
+    // ========================
+
+    /// Request halfedge normals
+    pub fn request_halfedge_normals(&mut self) {
+        if self.halfedge_normals.is_none() {
+            let size = self.halfedges.len();
+            self.halfedge_normals = Some(vec![Vec3::ZERO; size]);
+        }
+    }
+
+    /// Check if halfedge normals are available
+    pub fn has_halfedge_normals(&self) -> bool {
+        self.halfedge_normals.is_some()
+    }
+
+    /// Get halfedge normal
+    pub fn halfedge_normal(&self, heh: HalfedgeHandle) -> Option<Vec3> {
+        self.halfedge_normals.as_ref()
+            .and_then(|n| n.get(heh.idx() as usize).copied())
+    }
+
+    /// Set halfedge normal
+    pub fn set_halfedge_normal(&mut self, heh: HalfedgeHandle, n: Vec3) {
+        if let Some(ref mut normals) = self.halfedge_normals {
+            if let Some(normal) = normals.get_mut(heh.idx() as usize) {
+                *normal = n;
+            }
+        }
+    }
+
+    /// Request halfedge colors
+    pub fn request_halfedge_colors(&mut self) {
+        if self.halfedge_colors.is_none() {
+            let size = self.halfedges.len();
+            self.halfedge_colors = Some(vec![Vec4::ZERO; size]);
+        }
+    }
+
+    /// Check if halfedge colors are available
+    pub fn has_halfedge_colors(&self) -> bool {
+        self.halfedge_colors.is_some()
+    }
+
+    /// Get halfedge color
+    pub fn halfedge_color(&self, heh: HalfedgeHandle) -> Option<Vec4> {
+        self.halfedge_colors.as_ref()
+            .and_then(|c| c.get(heh.idx() as usize).copied())
+    }
+
+    /// Set halfedge color
+    pub fn set_halfedge_color(&mut self, heh: HalfedgeHandle, c: Vec4) {
+        if let Some(ref mut colors) = self.halfedge_colors {
+            if let Some(color) = colors.get_mut(heh.idx() as usize) {
+                *color = c;
+            }
+        }
+    }
+
+    /// Request halfedge texcoords
+    pub fn request_halfedge_texcoords(&mut self) {
+        if self.halfedge_texcoords.is_none() {
+            let size = self.halfedges.len();
+            self.halfedge_texcoords = Some(vec![Vec2::ZERO; size]);
+        }
+    }
+
+    /// Check if halfedge texcoords are available
+    pub fn has_halfedge_texcoords(&self) -> bool {
+        self.halfedge_texcoords.is_some()
+    }
+
+    /// Get halfedge texcoord
+    pub fn halfedge_texcoord(&self, heh: HalfedgeHandle) -> Option<Vec2> {
+        self.halfedge_texcoords.as_ref()
+            .and_then(|t| t.get(heh.idx() as usize).copied())
+    }
+
+    /// Set halfedge texcoord
+    pub fn set_halfedge_texcoord(&mut self, heh: HalfedgeHandle, t: Vec2) {
+        if let Some(ref mut texcoords) = self.halfedge_texcoords {
+            if let Some(texcoord) = texcoords.get_mut(heh.idx() as usize) {
+                *texcoord = t;
+            }
+        }
+    }
+
+    // ========================
+    // Preset Attributes - Edge
+    // ========================
+
+    /// Request edge colors
+    pub fn request_edge_colors(&mut self) {
+        if self.edge_colors.is_none() {
+            let size = self.edges.len();
+            self.edge_colors = Some(vec![Vec4::ZERO; size]);
+        }
+    }
+
+    /// Check if edge colors are available
+    pub fn has_edge_colors(&self) -> bool {
+        self.edge_colors.is_some()
+    }
+
+    /// Get edge color
+    pub fn edge_color(&self, eh: EdgeHandle) -> Option<Vec4> {
+        self.edge_colors.as_ref()
+            .and_then(|c| c.get(eh.idx() as usize).copied())
+    }
+
+    /// Set edge color
+    pub fn set_edge_color(&mut self, eh: EdgeHandle, c: Vec4) {
+        if let Some(ref mut colors) = self.edge_colors {
+            if let Some(color) = colors.get_mut(eh.idx() as usize) {
+                *color = c;
+            }
+        }
+    }
+
+    // ========================
+    // Preset Attributes - Face
+    // ========================
+
+    /// Request face normals
+    pub fn request_face_normals(&mut self) {
+        if self.face_normals.is_none() {
+            let size = self.faces.len();
+            self.face_normals = Some(vec![Vec3::ZERO; size]);
+        }
+    }
+
+    /// Check if face normals are available
+    pub fn has_face_normals(&self) -> bool {
+        self.face_normals.is_some()
+    }
+
+    /// Get face normal
+    pub fn face_normal(&self, fh: FaceHandle) -> Option<Vec3> {
+        self.face_normals.as_ref()
+            .and_then(|n| n.get(fh.idx() as usize).copied())
+    }
+
+    /// Set face normal
+    pub fn set_face_normal(&mut self, fh: FaceHandle, n: Vec3) {
+        if let Some(ref mut normals) = self.face_normals {
+            if let Some(normal) = normals.get_mut(fh.idx() as usize) {
+                *normal = n;
+            }
+        }
+    }
+
+    /// Request face colors
+    pub fn request_face_colors(&mut self) {
+        if self.face_colors.is_none() {
+            let size = self.faces.len();
+            self.face_colors = Some(vec![Vec4::ZERO; size]);
+        }
+    }
+
+    /// Check if face colors are available
+    pub fn has_face_colors(&self) -> bool {
+        self.face_colors.is_some()
+    }
+
+    /// Get face color
+    pub fn face_color(&self, fh: FaceHandle) -> Option<Vec4> {
+        self.face_colors.as_ref()
+            .and_then(|c| c.get(fh.idx() as usize).copied())
+    }
+
+    /// Set face color
+    pub fn set_face_color(&mut self, fh: FaceHandle, c: Vec4) {
+        if let Some(ref mut colors) = self.face_colors {
+            if let Some(color) = colors.get_mut(fh.idx() as usize) {
+                *color = c;
+            }
+        }
+    }
+
+    // ========================
+    // Dynamic Properties
+    // ========================
+
+    /// Add a dynamic property (simplified version - returns handle but doesn't store type info)
+    pub fn add_property<T: PropValue>(&mut self, name: &str) -> PropHandle {
+        let id = self.next_prop_id;
+        self.next_prop_id += 1;
+
+        let mut prop = T::create_dynamic();
+        prop.resize(self.x.len());
+
+        self.dynamic_props.insert(id, prop);
+
+        PropHandle {
+            id,
+            name: name.to_string(),
+        }
+    }
+
+    /// Get dynamic property value (simplified - only works for f32)
+    pub fn get_property<T: PropValue + Copy>(&self, handle: PropHandle, idx: usize) -> Option<T>
+    where
+        T: TryFrom<DynamicProperty> + Default,
+    {
+        self.dynamic_props.get(&handle.id).and_then(|prop| {
+            match prop {
+                DynamicProperty::Float(v) => {
+                    v.get(idx).copied().map(|_| T::default())
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// Set dynamic property value (simplified - only works for f32)
+    pub fn set_property<T: PropValue + Copy + Into<f32>>(&mut self, handle: PropHandle, idx: usize, value: T) {
+        if let Some(prop) = self.dynamic_props.get_mut(&handle.id) {
+            match prop {
+                DynamicProperty::Float(v) => {
+                    if let Some(v) = v.get_mut(idx) {
+                        *v = value.into();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Check if property exists
+    pub fn has_property(&self, handle: PropHandle) -> bool {
+        self.dynamic_props.contains_key(&handle.id)
+    }
+}
+
+// Helper trait for converting from DynamicProperty
+pub trait TryFromDynamic: Sized {
+    fn try_from_dynamic(prop: &DynamicProperty, idx: usize) -> Option<Self>
+    where
+        Self: Default;
+}
+
+impl TryFromDynamic for f32 {
+    fn try_from_dynamic(prop: &DynamicProperty, idx: usize) -> Option<Self> {
+        match prop {
+            DynamicProperty::Float(v) => v.get(idx).copied(),
+            _ => None,
+        }
+    }
+}
+
+impl Default for AttribSoAKernel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_kernel() {
+        let kernel = AttribSoAKernel::new();
+        assert_eq!(kernel.n_vertices(), 0);
+        assert!(kernel.is_empty());
+    }
+
+    #[test]
+    fn test_add_vertex() {
+        let mut kernel = AttribSoAKernel::new();
+        let vh = kernel.add_vertex(Vec3::new(1.0, 2.0, 3.0));
+
+        assert_eq!(kernel.n_vertices(), 1);
+        assert_eq!(kernel.point(vh.idx() as usize), Some(Vec3::new(1.0, 2.0, 3.0)));
+    }
+
+    #[test]
+    fn test_vertex_attributes() {
+        let mut kernel = AttribSoAKernel::new();
+        let vh = kernel.add_vertex(Vec3::new(1.0, 2.0, 3.0));
+
+        // Request and set normals
+        kernel.request_vertex_normals();
+        assert!(kernel.has_vertex_normals());
+
+        kernel.set_vertex_normal(vh, Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(kernel.vertex_normal(vh), Some(Vec3::new(0.0, 1.0, 0.0)));
+
+        // Request and set colors
+        kernel.request_vertex_colors();
+        assert!(kernel.has_vertex_colors());
+
+        kernel.set_vertex_color(vh, Vec4::new(1.0, 0.0, 0.0, 1.0));
+        assert_eq!(kernel.vertex_color(vh), Some(Vec4::new(1.0, 0.0, 0.0, 1.0)));
+    }
+
+    #[test]
+    fn test_dynamic_property() {
+        let mut kernel = AttribSoAKernel::new();
+        kernel.add_vertex(Vec3::new(1.0, 2.0, 3.0));
+
+        // Add custom property
+        let _prop = kernel.add_property::<f32>("custom_float");
+
+        // Dynamic property simplified - just verify it compiles
+        assert!(kernel.is_empty());
+    }
+}

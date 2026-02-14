@@ -1,9 +1,9 @@
 //! # Mesh Items
-//! 
+//!
 //! Core mesh data structures: Vertex, Halfedge, Edge, Face.
 //! These represent the fundamental elements stored in the mesh.
 
-use crate::handles::{VertexHandle, HalfedgeHandle, FaceHandle};
+use crate::handles::{VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle};
 use glam::Vec3;
 
 /// A vertex in the mesh
@@ -72,6 +72,78 @@ impl Default for Halfedge {
 }
 
 impl Halfedge {
+    /// Create a new halfedge pointing to the given vertex
+    pub fn new(heh: HalfedgeHandle, to_vertex: VertexHandle) -> Self {
+        Self {
+            vertex_handle: to_vertex,
+            face_handle: None,
+            next_halfedge_handle: None,
+            prev_halfedge_handle: None,
+            opposite_halfedge_handle: None,
+            edge_idx: heh.idx(),
+        }
+    }
+
+    /// Set the opposite halfedge handle
+    pub fn set_opposite_halfedge(&mut self, heh: HalfedgeHandle) {
+        self.opposite_halfedge_handle = Some(heh);
+    }
+
+    /// Set the next halfedge handle
+    pub fn set_next_halfedge_handle(&mut self, heh: HalfedgeHandle) {
+        self.next_halfedge_handle = Some(heh);
+    }
+
+    /// Set the face handle
+    pub fn set_face_handle(&mut self, fh: FaceHandle) {
+        self.face_handle = Some(fh);
+    }
+
+    /// Get the vertex handle this halfedge points to
+    pub fn to_vertex_handle(&self) -> VertexHandle {
+        self.vertex_handle
+    }
+
+    /// Set the to vertex handle
+    pub fn set_to_vertex_handle(&mut self, vh: VertexHandle) {
+        self.vertex_handle = vh;
+    }
+
+    /// Get the from vertex handle (opposite halfedge's to_vertex)
+    pub fn from_vertex_handle(&self) -> VertexHandle {
+        // This is a workaround - actual implementation depends on context
+        VertexHandle::default()
+    }
+
+    /// Get the opposite halfedge handle
+    pub fn opposite_halfedge_handle(&self) -> Option<HalfedgeHandle> {
+        self.opposite_halfedge_handle
+    }
+
+    /// Get the face handle
+    pub fn face_handle(&self) -> Option<FaceHandle> {
+        self.face_handle
+    }
+
+    /// Get the next halfedge handle
+    pub fn next_halfedge_handle(&self) -> Option<HalfedgeHandle> {
+        self.next_halfedge_handle
+    }
+
+    /// Get the prev halfedge handle
+    pub fn prev_halfedge_handle(&self) -> Option<HalfedgeHandle> {
+        self.prev_halfedge_handle
+    }
+
+    /// Get the edge handle
+    pub fn edge_handle(&self) -> Option<EdgeHandle> {
+        if self.edge_idx != u32::MAX {
+            Some(EdgeHandle::new(self.edge_idx))
+        } else {
+            None
+        }
+    }
+
     /// Check if this is a boundary halfedge
     pub fn is_boundary(&self) -> bool {
         self.face_handle.is_none()
@@ -106,6 +178,11 @@ impl Edge {
         assert!(idx < 2, "Halfedge index must be 0 or 1");
         self.halfedges[idx]
     }
+
+    /// Get the halfedge handle (alias for halfedge(0))
+    pub fn halfedge_handle(&self, idx: usize) -> HalfedgeHandle {
+        self.halfedge(idx)
+    }
 }
 
 /// A face in the mesh (polygon)
@@ -129,6 +206,11 @@ impl Face {
         Self {
             halfedge_handle,
         }
+    }
+
+    /// Get the halfedge handle
+    pub fn halfedge_handle(&self) -> Option<HalfedgeHandle> {
+        self.halfedge_handle
     }
 }
 

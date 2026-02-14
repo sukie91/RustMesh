@@ -180,7 +180,7 @@ pub fn find_boundary_loops(mesh: &RustMesh) -> Vec<BoundaryLoop> {
 /// # Returns
 /// True if the vertex forms a valid ear
 fn is_valid_ear(
-    mesh: &RustMesh,
+    _mesh: &RustMesh,
     vertices: &[VertexHandle],
     points: &[Vec3],
     i: usize,
@@ -208,7 +208,7 @@ fn is_valid_ear(
     // Compute the signed angle using cross product
     let v1 = p_curr - p_prev;
     let v2 = p_next - p_curr;
-    let cross = v1.cross(v2);
+    let _cross = v1.cross(v2);
     
     // For boundary loops, we assume counter-clockwise ordering
     // The cross product should have positive z-component in the local plane
@@ -331,15 +331,15 @@ fn fill_boundary_loop(mesh: &mut RustMesh, loop_info: BoundaryLoop) -> Result<us
     }
 
     // Make a copy of vertices and points that we can modify
-    let mut vertices = loop_info.vertices.clone();
-    let mut points = loop_info.points.clone();
+    let vertices = loop_info.vertices.clone();
+    let points = loop_info.points.clone();
     let mut faces_created = 0;
 
     // Track which indices are still valid (in the current polygon)
     let mut valid_indices: std::collections::HashSet<usize> = (0..n).collect();
 
     // Ear clipping loop
-    let mut current_n = n;
+    let current_n = n;
     let mut i = 0;
 
     while current_n > 3 && valid_indices.len() > 3 {
@@ -360,9 +360,9 @@ fn fill_boundary_loop(mesh: &mut RustMesh, loop_info: BoundaryLoop) -> Result<us
                 let next = (idx + 1) % current_n;
 
                 // Get current vertex positions
-                let p_prev = points[prev];
-                let p_curr = points[idx];
-                let p_next = points[next];
+                let _p_prev = points[prev];
+                let _p_curr = points[idx];
+                let _p_next = points[next];
 
                 // Create the ear face
                 let face_vertices = [vertices[prev], vertices[idx], vertices[next]];

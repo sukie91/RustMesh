@@ -3,7 +3,7 @@
 //! Provides convenient methods for mesh element iteration and aggregation.
 
 use crate::RustMesh;
-use crate::handles::{VertexHandle, FaceHandle, HalfedgeHandle, EdgeHandle};
+use crate::handles::{VertexHandle, FaceHandle};
 
 /// Smart vertex range with aggregation methods
 pub struct VertexRange<'a> {

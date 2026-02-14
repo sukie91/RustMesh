@@ -447,33 +447,31 @@ impl SoAKernel {
     #[inline]
     pub fn set_next_halfedge_handle(&mut self, heh: HalfedgeHandle, next_heh: HalfedgeHandle) {
         let idx = heh.idx_usize();
-        
-        // Check bounds
         if idx >= self.next_set.len() {
             self.next_set.resize(idx + 1, false);
         }
-        
-        // Check if next is already set
-        let already_set = self.next_set[idx];
-        
-        // Always set prev for the next halfedge (needed for vertex traversal)
+
+        if let Some(he) = self.halfedge_mut(heh) {
+            he.next_halfedge_handle = Some(next_heh);
+        }
         if let Some(he) = self.halfedge_mut(next_heh) {
             he.prev_halfedge_handle = Some(heh);
         }
-        
-        // Only set next if not already set
-        if !already_set {
-            if let Some(he) = self.halfedge_mut(heh) {
-                he.next_halfedge_handle = Some(next_heh);
-            }
-            self.next_set[idx] = true;
-        }
+        self.next_set[idx] = true;
     }
 
     /// Get the previous halfedge in the cycle
     #[inline]
     pub fn prev_halfedge_handle(&self, heh: HalfedgeHandle) -> Option<HalfedgeHandle> {
         self.halfedge(heh).and_then(|he| he.prev_halfedge_handle)
+    }
+
+    /// Set the previous halfedge handle
+    #[inline]
+    pub fn set_prev_halfedge_handle(&mut self, heh: HalfedgeHandle, prev_heh: HalfedgeHandle) {
+        if let Some(he) = self.halfedge_mut(heh) {
+            he.prev_halfedge_handle = Some(prev_heh);
+        }
     }
 
     /// Get vertex halfedge handle
@@ -517,7 +515,28 @@ impl SoAKernel {
     pub fn delete_face(&mut self, fh: FaceHandle) {
         let idx = fh.idx_usize();
         if idx < self.faces.len() {
-            self.faces[idx].halfedge_handle = None; // Mark as deleted
+            if let Some(start_heh) = self.faces[idx].halfedge_handle {
+                let n_halfedges = self.halfedges.len();
+                let mut visited = vec![false; n_halfedges];
+                let mut current = start_heh;
+                loop {
+                    let curr_idx = current.idx_usize();
+                    if curr_idx >= n_halfedges || visited[curr_idx] {
+                        break;
+                    }
+                    visited[curr_idx] = true;
+                    if let Some(he) = self.halfedge_mut(current) {
+                        he.face_handle = None;
+                        he.next_halfedge_handle = None;
+                        he.prev_halfedge_handle = None;
+                    }
+                    match self.next_halfedge_handle(current) {
+                        Some(next) if next.is_valid() => current = next,
+                        _ => break,
+                    }
+                }
+            }
+            self.faces[idx].halfedge_handle = None;
         }
     }
     

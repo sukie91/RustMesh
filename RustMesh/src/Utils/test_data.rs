@@ -4,7 +4,6 @@
 
 use crate::RustMesh;
 use crate::handles::VertexHandle;
-use crate::io::{read_mesh, write_mesh};
 use std::path::Path;
 
 /// Generate a simple cube
@@ -111,7 +110,7 @@ pub fn generate_icosahedron() -> RustMesh {
 
 /// Generate a subdivided icosphere (by subdividing icosahedron)
 pub fn generate_icosphere(subdivisions: u32) -> RustMesh {
-    let mut mesh = generate_icosahedron();
+    let mesh = generate_icosahedron();
 
     for _ in 0..subdivisions {
         // Simplified: just copy for now
@@ -282,13 +281,17 @@ pub fn generate_noisy_sphere(radius: f32, noise: f32, segments: usize, rings: us
 }
 
 /// Save generated mesh to file
-pub fn save_mesh<P: AsRef<Path>>(mesh: &RustMesh, path: P) -> crate::io::IoResult<()> {
-    crate::io::write_mesh(mesh, path)
+/// TODO: Implement when IO module is ready
+#[allow(dead_code)]
+pub fn save_mesh<P: AsRef<Path>>(_mesh: &RustMesh, _path: P) -> std::io::Result<()> {
+    unimplemented!("IO module not yet implemented")
 }
 
 /// Load generated mesh from file
-pub fn load_mesh<P: AsRef<Path>>(path: P) -> crate::io::IoResult<RustMesh> {
-    crate::io::read_mesh(path)
+/// TODO: Implement when IO module is ready
+#[allow(dead_code)]
+pub fn load_mesh<P: AsRef<Path>>(_path: P) -> std::io::Result<RustMesh> {
+    unimplemented!("IO module not yet implemented")
 }
 
 #[cfg(test)]
