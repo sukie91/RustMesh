@@ -8,6 +8,7 @@ use crate::handles::{VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle};
 use crate::kernel::ArrayKernel;
 use crate::soa_kernel::SoAKernel;
 use crate::items::Vertex;
+use glam::{Vec2, Vec3, Vec4};
 
 // ============================================================================
 // High-Performance Index Iterators (no Handle overhead)
@@ -798,6 +799,202 @@ impl PolyMeshSoA {
     pub fn delete_edge(&mut self, eh: EdgeHandle) {
         self.kernel.delete_edge(eh);
     }
+
+    // =========================================================================
+    // Vertex attributes
+    // =========================================================================
+
+    /// Request vertex normals
+    pub fn request_vertex_normals(&mut self) {
+        self.kernel.request_vertex_normals();
+    }
+
+    /// Check if vertex normals are available
+    pub fn has_vertex_normals(&self) -> bool {
+        self.kernel.has_vertex_normals()
+    }
+
+    /// Get vertex normal
+    pub fn normal(&self, vh: VertexHandle) -> Option<glam::Vec3> {
+        self.kernel.vertex_normal(vh)
+    }
+
+    /// Set vertex normal
+    pub fn set_normal(&mut self, vh: VertexHandle, n: glam::Vec3) {
+        self.kernel.set_vertex_normal(vh, n);
+    }
+
+    /// Request vertex colors
+    pub fn request_vertex_colors(&mut self) {
+        self.kernel.request_vertex_colors();
+    }
+
+    /// Check if vertex colors are available
+    pub fn has_vertex_colors(&self) -> bool {
+        self.kernel.has_vertex_colors()
+    }
+
+    /// Get vertex color
+    pub fn color(&self, vh: VertexHandle) -> Option<glam::Vec4> {
+        self.kernel.vertex_color(vh)
+    }
+
+    /// Set vertex color
+    pub fn set_color(&mut self, vh: VertexHandle, c: glam::Vec4) {
+        self.kernel.set_vertex_color(vh, c);
+    }
+
+    /// Request vertex texture coordinates
+    pub fn request_vertex_texcoords(&mut self) {
+        self.kernel.request_vertex_texcoords();
+    }
+
+    /// Check if vertex texcoords are available
+    pub fn has_vertex_texcoords(&self) -> bool {
+        self.kernel.has_vertex_texcoords()
+    }
+
+    /// Get vertex texcoord
+    pub fn texcoord(&self, vh: VertexHandle) -> Option<glam::Vec2> {
+        self.kernel.vertex_texcoord(vh)
+    }
+
+    /// Set vertex texcoord
+    pub fn set_texcoord(&mut self, vh: VertexHandle, t: glam::Vec2) {
+        self.kernel.set_vertex_texcoord(vh, t);
+    }
+
+    // =========================================================================
+    // Face attributes
+    // =========================================================================
+
+    /// Request face normals
+    pub fn request_face_normals(&mut self) {
+        self.kernel.request_face_normals();
+    }
+
+    /// Check if face normals are available
+    pub fn has_face_normals(&self) -> bool {
+        self.kernel.has_face_normals()
+    }
+
+    /// Get face normal
+    pub fn f_normal(&self, fh: FaceHandle) -> Option<glam::Vec3> {
+        self.kernel.face_normal(fh)
+    }
+
+    /// Set face normal
+    pub fn set_f_normal(&mut self, fh: FaceHandle, n: glam::Vec3) {
+        self.kernel.set_face_normal(fh, n);
+    }
+
+    /// Request face colors
+    pub fn request_face_colors(&mut self) {
+        self.kernel.request_face_colors();
+    }
+
+    /// Check if face colors are available
+    pub fn has_face_colors(&self) -> bool {
+        self.kernel.has_face_colors()
+    }
+
+    /// Get face color
+    pub fn f_color(&self, fh: FaceHandle) -> Option<glam::Vec4> {
+        self.kernel.face_color(fh)
+    }
+
+    /// Set face color
+    pub fn set_f_color(&mut self, fh: FaceHandle, c: glam::Vec4) {
+        self.kernel.set_face_color(fh, c);
+    }
+
+    // =========================================================================
+    // Halfedge attributes
+    // =========================================================================
+
+    /// Request halfedge normals
+    pub fn request_halfedge_normals(&mut self) {
+        self.kernel.request_halfedge_normals();
+    }
+
+    /// Check if halfedge normals are available
+    pub fn has_halfedge_normals(&self) -> bool {
+        self.kernel.has_halfedge_normals()
+    }
+
+    /// Get halfedge normal
+    pub fn h_normal(&self, heh: HalfedgeHandle) -> Option<glam::Vec3> {
+        self.kernel.halfedge_normal(heh)
+    }
+
+    /// Set halfedge normal
+    pub fn set_h_normal(&mut self, heh: HalfedgeHandle, n: glam::Vec3) {
+        self.kernel.set_halfedge_normal(heh, n);
+    }
+
+    /// Request halfedge colors
+    pub fn request_halfedge_colors(&mut self) {
+        self.kernel.request_halfedge_colors();
+    }
+
+    /// Check if halfedge colors are available
+    pub fn has_halfedge_colors(&self) -> bool {
+        self.kernel.has_halfedge_colors()
+    }
+
+    /// Get halfedge color
+    pub fn h_color(&self, heh: HalfedgeHandle) -> Option<glam::Vec4> {
+        self.kernel.halfedge_color(heh)
+    }
+
+    /// Set halfedge color
+    pub fn set_h_color(&mut self, heh: HalfedgeHandle, c: glam::Vec4) {
+        self.kernel.set_halfedge_color(heh, c);
+    }
+
+    /// Request halfedge texture coordinates
+    pub fn request_halfedge_texcoords(&mut self) {
+        self.kernel.request_halfedge_texcoords();
+    }
+
+    /// Check if halfedge texcoords are available
+    pub fn has_halfedge_texcoords(&self) -> bool {
+        self.kernel.has_halfedge_texcoords()
+    }
+
+    /// Get halfedge texcoord
+    pub fn h_texcoord(&self, heh: HalfedgeHandle) -> Option<glam::Vec2> {
+        self.kernel.halfedge_texcoord(heh)
+    }
+
+    /// Set halfedge texcoord
+    pub fn set_h_texcoord(&mut self, heh: HalfedgeHandle, t: glam::Vec2) {
+        self.kernel.set_halfedge_texcoord(heh, t);
+    }
+
+    // =========================================================================
+    // Edge attributes
+    // =========================================================================
+
+    /// Request edge colors
+    pub fn request_edge_colors(&mut self) {
+        self.kernel.request_edge_colors();
+    }
+
+    /// Check if edge colors are available
+    pub fn has_edge_colors(&self) -> bool {
+        self.kernel.has_edge_colors()
+    }
+
+    /// Get edge color
+    pub fn e_color(&self, eh: EdgeHandle) -> Option<glam::Vec4> {
+        self.kernel.edge_color(eh)
+    }
+
+    /// Set edge color
+    pub fn set_e_color(&mut self, eh: EdgeHandle, c: glam::Vec4) {
+        self.kernel.set_edge_color(eh, c);
+    }
 }
 
 #[cfg(test)]
@@ -871,6 +1068,68 @@ mod tests_soa {
         assert!((cx - 0.667).abs() < 0.001);
         assert!((cy - 0.667).abs() < 0.001);
         assert_eq!(cz, 0.0);
+    }
+
+    #[test]
+    fn test_vertex_attributes() {
+        let mut mesh = PolyMeshSoA::new();
+
+        // Add vertices
+        let v0 = mesh.add_vertex(glam::vec3(0.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(glam::vec3(1.0, 0.0, 0.0));
+        let v2 = mesh.add_vertex(glam::vec3(0.0, 1.0, 0.0));
+
+        // Request and set vertex normals
+        mesh.request_vertex_normals();
+        assert!(mesh.has_vertex_normals());
+
+        mesh.set_normal(v0, glam::vec3(0.0, 0.0, 1.0));
+        mesh.set_normal(v1, glam::vec3(0.0, 0.0, 1.0));
+        mesh.set_normal(v2, glam::vec3(0.0, 0.0, 1.0));
+
+        assert_eq!(mesh.normal(v0), Some(glam::vec3(0.0, 0.0, 1.0)));
+
+        // Request and set vertex colors
+        mesh.request_vertex_colors();
+        assert!(mesh.has_vertex_colors());
+
+        mesh.set_color(v0, glam::vec4(1.0, 0.0, 0.0, 1.0));
+        assert_eq!(mesh.color(v0), Some(glam::vec4(1.0, 0.0, 0.0, 1.0)));
+
+        // Request and set vertex texcoords
+        mesh.request_vertex_texcoords();
+        assert!(mesh.has_vertex_texcoords());
+
+        mesh.set_texcoord(v0, glam::vec2(0.0, 0.0));
+        mesh.set_texcoord(v1, glam::vec2(1.0, 0.0));
+        mesh.set_texcoord(v2, glam::vec2(0.0, 1.0));
+
+        assert_eq!(mesh.texcoord(v0), Some(glam::vec2(0.0, 0.0)));
+    }
+
+    #[test]
+    fn test_face_attributes() {
+        let mut mesh = PolyMeshSoA::new();
+
+        // Add vertices and face
+        let v0 = mesh.add_vertex(glam::vec3(0.0, 0.0, 0.0));
+        let v1 = mesh.add_vertex(glam::vec3(1.0, 0.0, 0.0));
+        let v2 = mesh.add_vertex(glam::vec3(0.0, 1.0, 0.0));
+        mesh.add_face(&[v0, v1, v2]);
+
+        // Request face normals
+        mesh.request_face_normals();
+        assert!(mesh.has_face_normals());
+
+        mesh.set_f_normal(FaceHandle::new(0), glam::vec3(0.0, 0.0, 1.0));
+        assert_eq!(mesh.f_normal(FaceHandle::new(0)), Some(glam::vec3(0.0, 0.0, 1.0)));
+
+        // Request face colors
+        mesh.request_face_colors();
+        assert!(mesh.has_face_colors());
+
+        mesh.set_f_color(FaceHandle::new(0), glam::vec4(0.5, 0.5, 0.5, 1.0));
+        assert_eq!(mesh.f_color(FaceHandle::new(0)), Some(glam::vec4(0.5, 0.5, 0.5, 1.0)));
     }
 }
 

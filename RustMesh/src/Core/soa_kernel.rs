@@ -12,7 +12,7 @@
 
 use crate::handles::{VertexHandle, HalfedgeHandle, EdgeHandle, FaceHandle};
 use crate::items::{Halfedge, Edge, Face};
-use glam::Vec3;
+use glam::{Vec2, Vec3, Vec4};
 use std::collections::HashMap;
 
 /// SoA Kernel - SIMD-friendly mesh storage
@@ -22,20 +22,41 @@ pub struct SoAKernel {
     x: Vec<f32>,
     y: Vec<f32>,
     z: Vec<f32>,
-    
+
     // Vertex auxiliary data
     halfedge_handles: Vec<Option<HalfedgeHandle>>,
-    
+
     // Connectivity data
     halfedges: Vec<Halfedge>,
     edges: Vec<Edge>,
     faces: Vec<Face>,
-    
+
     // Edge lookup: (min_v, max_v) -> HalfedgeHandle (the one pointing from min to max)
     edge_map: HashMap<(u32, u32), HalfedgeHandle>,
-    
+
     // Track which halfedges have had next set
     next_set: Vec<bool>,
+
+    // ========================
+    // Attribute arrays (SoA layout)
+    // ========================
+
+    // Vertex attributes
+    vertex_normals: Option<Vec<Vec3>>,
+    vertex_colors: Option<Vec<Vec4>>,
+    vertex_texcoords: Option<Vec<Vec2>>,
+
+    // Halfedge attributes
+    halfedge_normals: Option<Vec<Vec3>>,
+    halfedge_colors: Option<Vec<Vec4>>,
+    halfedge_texcoords: Option<Vec<Vec2>>,
+
+    // Edge attributes
+    edge_colors: Option<Vec<Vec4>>,
+
+    // Face attributes
+    face_normals: Option<Vec<Vec3>>,
+    face_colors: Option<Vec<Vec4>>,
 }
 
 impl SoAKernel {
@@ -52,6 +73,16 @@ impl SoAKernel {
             faces: Vec::new(),
             edge_map: HashMap::new(),
             next_set: Vec::new(),
+            // Attributes
+            vertex_normals: None,
+            vertex_colors: None,
+            vertex_texcoords: None,
+            halfedge_normals: None,
+            halfedge_colors: None,
+            halfedge_texcoords: None,
+            edge_colors: None,
+            face_normals: None,
+            face_colors: None,
         }
     }
 
@@ -67,6 +98,16 @@ impl SoAKernel {
         self.faces.clear();
         self.edge_map.clear();
         self.next_set.clear();
+        // Clear attributes
+        self.vertex_normals = None;
+        self.vertex_colors = None;
+        self.vertex_texcoords = None;
+        self.halfedge_normals = None;
+        self.halfedge_colors = None;
+        self.halfedge_texcoords = None;
+        self.edge_colors = None;
+        self.face_normals = None;
+        self.face_colors = None;
     }
 
     // --- Vertex operations ---
@@ -79,6 +120,18 @@ impl SoAKernel {
         self.y.push(point.y);
         self.z.push(point.z);
         self.halfedge_handles.push(None);
+
+        // Resize attribute arrays if they exist
+        if let Some(ref mut normals) = self.vertex_normals {
+            normals.push(Vec3::ZERO);
+        }
+        if let Some(ref mut colors) = self.vertex_colors {
+            colors.push(Vec4::new(1.0, 1.0, 1.0, 1.0));
+        }
+        if let Some(ref mut texcoords) = self.vertex_texcoords {
+            texcoords.push(Vec2::ZERO);
+        }
+
         VertexHandle::new(idx)
     }
 
@@ -708,5 +761,269 @@ impl SoAKernel {
     #[inline]
     pub unsafe fn vertex_sum_simd(&self) -> (f32, f32, f32) {
         self.centroid_simd()
+    }
+
+    // =========================================================================
+    // Attribute management
+    // =========================================================================
+
+    // --- Vertex attributes ---
+
+    /// Request vertex normals
+    pub fn request_vertex_normals(&mut self) {
+        if self.vertex_normals.is_none() {
+            let size = self.x.len();
+            self.vertex_normals = Some(vec![Vec3::ZERO; size]);
+        }
+    }
+
+    /// Check if vertex normals are available
+    pub fn has_vertex_normals(&self) -> bool {
+        self.vertex_normals.is_some()
+    }
+
+    /// Get vertex normal
+    pub fn vertex_normal(&self, vh: VertexHandle) -> Option<Vec3> {
+        self.vertex_normals.as_ref()
+            .and_then(|n| n.get(vh.idx_usize()).copied())
+    }
+
+    /// Set vertex normal
+    pub fn set_vertex_normal(&mut self, vh: VertexHandle, n: Vec3) {
+        if let Some(ref mut normals) = self.vertex_normals {
+            if let Some(normal) = normals.get_mut(vh.idx_usize()) {
+                *normal = n;
+            }
+        }
+    }
+
+    /// Request vertex colors
+    pub fn request_vertex_colors(&mut self) {
+        if self.vertex_colors.is_none() {
+            let size = self.x.len();
+            self.vertex_colors = Some(vec![Vec4::new(1.0, 1.0, 1.0, 1.0); size]);
+        }
+    }
+
+    /// Check if vertex colors are available
+    pub fn has_vertex_colors(&self) -> bool {
+        self.vertex_colors.is_some()
+    }
+
+    /// Get vertex color
+    pub fn vertex_color(&self, vh: VertexHandle) -> Option<Vec4> {
+        self.vertex_colors.as_ref()
+            .and_then(|c| c.get(vh.idx_usize()).copied())
+    }
+
+    /// Set vertex color
+    pub fn set_vertex_color(&mut self, vh: VertexHandle, c: Vec4) {
+        if let Some(ref mut colors) = self.vertex_colors {
+            if let Some(color) = colors.get_mut(vh.idx_usize()) {
+                *color = c;
+            }
+        }
+    }
+
+    /// Request vertex texture coordinates
+    pub fn request_vertex_texcoords(&mut self) {
+        if self.vertex_texcoords.is_none() {
+            let size = self.x.len();
+            self.vertex_texcoords = Some(vec![Vec2::ZERO; size]);
+        }
+    }
+
+    /// Check if vertex texcoords are available
+    pub fn has_vertex_texcoords(&self) -> bool {
+        self.vertex_texcoords.is_some()
+    }
+
+    /// Get vertex texcoord
+    pub fn vertex_texcoord(&self, vh: VertexHandle) -> Option<Vec2> {
+        self.vertex_texcoords.as_ref()
+            .and_then(|t| t.get(vh.idx_usize()).copied())
+    }
+
+    /// Set vertex texcoord
+    pub fn set_vertex_texcoord(&mut self, vh: VertexHandle, t: Vec2) {
+        if let Some(ref mut texcoords) = self.vertex_texcoords {
+            if let Some(texcoord) = texcoords.get_mut(vh.idx_usize()) {
+                *texcoord = t;
+            }
+        }
+    }
+
+    // --- Halfedge attributes ---
+
+    /// Request halfedge normals
+    pub fn request_halfedge_normals(&mut self) {
+        if self.halfedge_normals.is_none() {
+            let size = self.halfedges.len();
+            self.halfedge_normals = Some(vec![Vec3::ZERO; size]);
+        }
+    }
+
+    /// Check if halfedge normals are available
+    pub fn has_halfedge_normals(&self) -> bool {
+        self.halfedge_normals.is_some()
+    }
+
+    /// Get halfedge normal
+    pub fn halfedge_normal(&self, heh: HalfedgeHandle) -> Option<Vec3> {
+        self.halfedge_normals.as_ref()
+            .and_then(|n| n.get(heh.idx_usize()).copied())
+    }
+
+    /// Set halfedge normal
+    pub fn set_halfedge_normal(&mut self, heh: HalfedgeHandle, n: Vec3) {
+        if let Some(ref mut normals) = self.halfedge_normals {
+            if let Some(normal) = normals.get_mut(heh.idx_usize()) {
+                *normal = n;
+            }
+        }
+    }
+
+    /// Request halfedge colors
+    pub fn request_halfedge_colors(&mut self) {
+        if self.halfedge_colors.is_none() {
+            let size = self.halfedges.len();
+            self.halfedge_colors = Some(vec![Vec4::new(0.5, 0.5, 0.5, 1.0); size]);
+        }
+    }
+
+    /// Check if halfedge colors are available
+    pub fn has_halfedge_colors(&self) -> bool {
+        self.halfedge_colors.is_some()
+    }
+
+    /// Get halfedge color
+    pub fn halfedge_color(&self, heh: HalfedgeHandle) -> Option<Vec4> {
+        self.halfedge_colors.as_ref()
+            .and_then(|c| c.get(heh.idx_usize()).copied())
+    }
+
+    /// Set halfedge color
+    pub fn set_halfedge_color(&mut self, heh: HalfedgeHandle, c: Vec4) {
+        if let Some(ref mut colors) = self.halfedge_colors {
+            if let Some(color) = colors.get_mut(heh.idx_usize()) {
+                *color = c;
+            }
+        }
+    }
+
+    /// Request halfedge texcoords
+    pub fn request_halfedge_texcoords(&mut self) {
+        if self.halfedge_texcoords.is_none() {
+            let size = self.halfedges.len();
+            self.halfedge_texcoords = Some(vec![Vec2::ZERO; size]);
+        }
+    }
+
+    /// Check if halfedge texcoords are available
+    pub fn has_halfedge_texcoords(&self) -> bool {
+        self.halfedge_texcoords.is_some()
+    }
+
+    /// Get halfedge texcoord
+    pub fn halfedge_texcoord(&self, heh: HalfedgeHandle) -> Option<Vec2> {
+        self.halfedge_texcoords.as_ref()
+            .and_then(|t| t.get(heh.idx_usize()).copied())
+    }
+
+    /// Set halfedge texcoord
+    pub fn set_halfedge_texcoord(&mut self, heh: HalfedgeHandle, t: Vec2) {
+        if let Some(ref mut texcoords) = self.halfedge_texcoords {
+            if let Some(texcoord) = texcoords.get_mut(heh.idx_usize()) {
+                *texcoord = t;
+            }
+        }
+    }
+
+    // --- Edge attributes ---
+
+    /// Request edge colors
+    pub fn request_edge_colors(&mut self) {
+        if self.edge_colors.is_none() {
+            let size = self.edges.len();
+            self.edge_colors = Some(vec![Vec4::new(0.5, 0.5, 0.5, 1.0); size]);
+        }
+    }
+
+    /// Check if edge colors are available
+    pub fn has_edge_colors(&self) -> bool {
+        self.edge_colors.is_some()
+    }
+
+    /// Get edge color
+    pub fn edge_color(&self, eh: EdgeHandle) -> Option<Vec4> {
+        self.edge_colors.as_ref()
+            .and_then(|c| c.get(eh.idx_usize()).copied())
+    }
+
+    /// Set edge color
+    pub fn set_edge_color(&mut self, eh: EdgeHandle, c: Vec4) {
+        if let Some(ref mut colors) = self.edge_colors {
+            if let Some(color) = colors.get_mut(eh.idx_usize()) {
+                *color = c;
+            }
+        }
+    }
+
+    // --- Face attributes ---
+
+    /// Request face normals
+    pub fn request_face_normals(&mut self) {
+        if self.face_normals.is_none() {
+            let size = self.faces.len();
+            self.face_normals = Some(vec![Vec3::ZERO; size]);
+        }
+    }
+
+    /// Check if face normals are available
+    pub fn has_face_normals(&self) -> bool {
+        self.face_normals.is_some()
+    }
+
+    /// Get face normal
+    pub fn face_normal(&self, fh: FaceHandle) -> Option<Vec3> {
+        self.face_normals.as_ref()
+            .and_then(|n| n.get(fh.idx_usize()).copied())
+    }
+
+    /// Set face normal
+    pub fn set_face_normal(&mut self, fh: FaceHandle, n: Vec3) {
+        if let Some(ref mut normals) = self.face_normals {
+            if let Some(normal) = normals.get_mut(fh.idx_usize()) {
+                *normal = n;
+            }
+        }
+    }
+
+    /// Request face colors
+    pub fn request_face_colors(&mut self) {
+        if self.face_colors.is_none() {
+            let size = self.faces.len();
+            self.face_colors = Some(vec![Vec4::new(0.8, 0.8, 0.8, 1.0); size]);
+        }
+    }
+
+    /// Check if face colors are available
+    pub fn has_face_colors(&self) -> bool {
+        self.face_colors.is_some()
+    }
+
+    /// Get face color
+    pub fn face_color(&self, fh: FaceHandle) -> Option<Vec4> {
+        self.face_colors.as_ref()
+            .and_then(|c| c.get(fh.idx_usize()).copied())
+    }
+
+    /// Set face color
+    pub fn set_face_color(&mut self, fh: FaceHandle, c: Vec4) {
+        if let Some(ref mut colors) = self.face_colors {
+            if let Some(color) = colors.get_mut(fh.idx_usize()) {
+                *color = c;
+            }
+        }
     }
 }

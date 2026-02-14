@@ -190,12 +190,13 @@ impl TsdfVolume {
                     let tsdf = sdf.clamp(-trunc, trunc) / trunc;
 
                     // Get voxel and update
+                    let integration_weight = self.config.integration_weight;
+                    let max_weight = self.config.max_weight;
                     let voxel = self.get_voxel_mut(vx, vy, vz);
 
                     // TSDF fusion
-                    let w = self.config.integration_weight;
-                    voxel.tsdf = (voxel.tsdf * voxel.weight + tsdf * w) / (voxel.weight + w);
-                    voxel.weight = (voxel.weight + w).min(self.config.max_weight);
+                    voxel.tsdf = (voxel.tsdf * voxel.weight + tsdf * integration_weight) / (voxel.weight + integration_weight);
+                    voxel.weight = (voxel.weight + integration_weight).min(max_weight);
 
                     // Color fusion (if available)
                     if let Some(colors) = color {
@@ -205,11 +206,11 @@ impl TsdfVolume {
                         let cb = c[2] as f32 / 255.0;
 
                         voxel.color = [
-                            (voxel.color[0] * voxel.color_weight + cr * w) / (voxel.color_weight + w),
-                            (voxel.color[1] * voxel.color_weight + cg * w) / (voxel.color_weight + w),
-                            (voxel.color[2] * voxel.color_weight + cb * w) / (voxel.color_weight + w),
+                            (voxel.color[0] * voxel.color_weight + cr * integration_weight) / (voxel.color_weight + integration_weight),
+                            (voxel.color[1] * voxel.color_weight + cg * integration_weight) / (voxel.color_weight + integration_weight),
+                            (voxel.color[2] * voxel.color_weight + cb * integration_weight) / (voxel.color_weight + integration_weight),
                         ];
-                        voxel.color_weight += w;
+                        voxel.color_weight += integration_weight;
                     }
                 }
             }
@@ -252,13 +253,14 @@ impl TsdfVolume {
                 let world_pos = extrinsics.transform_point3(Vec3::new(cam_x, cam_y, z));
 
                 if let Some((vx, vy, vz)) = self.world_to_voxel(world_pos) {
-                    let sdf = 0.0; // Surface point
+                    let sdf: f32 = 0.0; // Surface point
                     let tsdf = sdf.clamp(-trunc, trunc) / trunc;
 
+                    let integration_weight = self.config.integration_weight;
+                    let max_weight = self.config.max_weight;
                     let voxel = self.get_voxel_mut(vx, vy, vz);
-                    let w = self.config.integration_weight;
-                    voxel.tsdf = (voxel.tsdf * voxel.weight + tsdf * w) / (voxel.weight + w);
-                    voxel.weight = (voxel.weight + w).min(self.config.max_weight);
+                    voxel.tsdf = (voxel.tsdf * voxel.weight + tsdf * integration_weight) / (voxel.weight + integration_weight);
+                    voxel.weight = (voxel.weight + integration_weight).min(max_weight);
 
                     // Color integration
                     if let Some(color_fn) = get_color_at {
@@ -267,11 +269,11 @@ impl TsdfVolume {
                             let cg = c[1] as f32 / 255.0;
                             let cb = c[2] as f32 / 255.0;
                             voxel.color = [
-                                (voxel.color[0] * voxel.color_weight + cr * w) / (voxel.color_weight + w),
-                                (voxel.color[1] * voxel.color_weight + cg * w) / (voxel.color_weight + w),
-                                (voxel.color[2] * voxel.color_weight + cb * w) / (voxel.color_weight + w),
+                                (voxel.color[0] * voxel.color_weight + cr * integration_weight) / (voxel.color_weight + integration_weight),
+                                (voxel.color[1] * voxel.color_weight + cg * integration_weight) / (voxel.color_weight + integration_weight),
+                                (voxel.color[2] * voxel.color_weight + cb * integration_weight) / (voxel.color_weight + integration_weight),
                             ];
-                            voxel.color_weight += w;
+                            voxel.color_weight += integration_weight;
                         }
                     }
                 }
@@ -286,7 +288,7 @@ impl TsdfVolume {
         self.voxels
             .iter()
             .filter(|(_, v)| v.weight > 0.0 && v.tsdf.abs() < threshold)
-            .map(|((&x, &y, &z), v)| (x, y, z, v))
+            .map(|((x, y, z), v)| (*x, *y, *z, v))
             .collect()
     }
 

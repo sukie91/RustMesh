@@ -79,13 +79,14 @@ impl MeshExtractor {
             max_weight: 100.0,
             integration_weight: 1.0,
         };
+        let config_clone = config.clone();
 
         Self {
             config: MeshExtractionConfig {
                 tsdf_config: config,
                 ..Default::default()
             },
-            volume: TsdfVolume::new(config),
+            volume: TsdfVolume::new(config_clone),
         }
     }
 
