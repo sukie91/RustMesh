@@ -49,5 +49,8 @@ opencv = ["dep:opencv"]
 deep-learning = ["dep:tch"]
 image = ["dep:image"]
 
+[dev-dependencies]
+tempfile = "3.3"
+
 [build-dependencies]
 bindgen = "0.69"

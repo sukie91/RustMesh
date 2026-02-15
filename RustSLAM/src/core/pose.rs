@@ -59,8 +59,13 @@ impl SE3 {
         ]);
         let rot = Quat::from_mat3(&r);
         let t = Vec3::new(translation[0], translation[1], translation[2]);
-        
+
         Self { rotation: rot, translation: t }
+    }
+
+    /// Create from quaternion and translation vectors
+    pub fn from_quat_translation(rotation: Quat, translation: Vec3) -> Self {
+        Self { rotation, translation }
     }
 
     /// Convert to 4x4 transformation matrix
