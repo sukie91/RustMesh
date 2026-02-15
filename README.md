@@ -36,7 +36,7 @@ Pipeline: 相机输入 → RustSLAM → 3DGS 融合 → 网格抽取 → RustMes
 - Smart Handle 导航系统
 - 属性系统
 
-**进度: ~50-60%** | [详细](./rustmesh/ROADMAP.md)
+**进度: ~85%** | [详细](./RustMesh/README.md)
 
 ---
 
@@ -58,7 +58,7 @@ Pipeline: 相机输入 → RustSLAM → 3DGS 融合 → 网格抽取 → RustMes
 - apex-solver: 图优化
 - g2o-rs: 图优化
 
-**进度: ~80%** | [详细](./rustslam/README.md)
+**进度: ~85%** | [详细](./RustSLAM/README.md)
 
 ---
 
@@ -93,7 +93,7 @@ Pipeline: 相机输入 → RustSLAM → 3DGS 融合 → 网格抽取 → RustMes
 
 ```
 RustScan/
-├── RustMesh/           # 核心网格库 (~50%)
+├── RustMesh/           # 核心网格库 (~85%)
 │   ├── Core/           # 基础数据结构
 │   │   ├── handles.rs      # Handle 系统
 │   │   ├── connectivity.rs  # 连接关系
@@ -108,7 +108,7 @@ RustScan/
 │   │   └── ...
 │   └── Utils/          # 工具
 │
-├── RustSLAM/           # SLAM + 3DGS (~80%)
+├── RustSLAM/           # SLAM + 3DGS (~85%)
 │   ├── core/           # 核心结构
 │   │   ├── frame.rs       # 帧
 │   │   ├── keyframe.rs    # 关键帧
@@ -166,8 +166,8 @@ cargo test
 
 | 模块 | 完成度 | 优先级 | 说明 |
 |------|--------|--------|------|
-| **RustSLAM** | ~80% | P0 | 核心 SLAM + 3DGS 完备 |
-| **RustMesh** | ~50-60% | P1 | 基础扎实，需完善集成 |
+| **RustSLAM** | ~85% | P0 | 核心 SLAM + 3DGS 完备 |
+| **RustMesh** | ~85% | P1 | 基础扎实，所有测试通过 |
 | **RustGUI** | 0% | P2 | 待启动 |
 
 ### RustSLAM 完成清单

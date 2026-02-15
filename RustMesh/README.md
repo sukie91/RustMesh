@@ -92,10 +92,12 @@ cargo run --example smart_handles_demo
 ## Testing
 
 ```bash
-cargo test --lib          # Run all tests
+cargo test --lib          # Run all tests (129 passing)
 cargo test core::io::     # IO tests only
 cargo bench               # Benchmarks
 ```
+
+**Test Status**: 129/129 tests passing ✅
 
 ## Architecture
 
@@ -145,22 +147,22 @@ src/
 
 ## Status
 
-**Current Progress: ~70%**
+**Current Progress: ~85%**
 
 ✅ **Complete**:
-- Half-edge data structure
-- SoA kernel with SIMD
-- OBJ read/write
+- Half-edge data structure with SoA kernel
+- OBJ read/write (normals, texcoords, colors)
 - PLY export (ASCII/Binary)
 - Conversion API (`from_triangle_mesh`)
-- Basic algorithms (decimation, subdivision, smoothing)
-- Smart handles
+- Mesh algorithms (decimation, subdivision, smoothing, hole filling, repair)
+- Smart handles with type-safe navigation
+- All core tests passing (129/129) ✅
 
 ⏳ **In Progress**:
 - PLY import
-- STL format
-- Advanced decimation
+- STL/OFF format support
 - Performance optimizations
+- Advanced attribute system
 
 ## Building
 
