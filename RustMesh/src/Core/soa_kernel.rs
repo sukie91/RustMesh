@@ -549,6 +549,22 @@ impl SoAKernel {
     pub fn delete_edge(&mut self, eh: EdgeHandle) {
         let idx = eh.idx_usize();
         if idx < self.edges.len() {
+            // Get the two halfedges before marking as invalid
+            let he0 = self.edges[idx].halfedges[0];
+            let he1 = self.edges[idx].halfedges[1];
+
+            // Get the vertices from the halfedges to remove from edge_map
+            if he0.is_valid() && he1.is_valid() {
+                if let (Some(h0), Some(h1)) = (self.halfedge(he0), self.halfedge(he1)) {
+                    let v0 = h0.vertex_handle.idx();
+                    let v1 = h1.vertex_handle.idx();
+
+                    // Remove from edge_map using canonical ordering
+                    let (min_v, max_v) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+                    self.edge_map.remove(&(min_v, max_v));
+                }
+            }
+
             // Mark halfedges as invalid
             self.edges[idx].halfedges = [HalfedgeHandle::new(u32::MAX), HalfedgeHandle::new(u32::MAX)];
         }

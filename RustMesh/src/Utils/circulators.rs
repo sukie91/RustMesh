@@ -11,12 +11,20 @@ pub struct VertexVertexCirculator<'a> {
     start_heh: HalfedgeHandle,
     current_heh: HalfedgeHandle,
     first: bool,
+    iteration_count: usize,
+    max_iterations: usize,
 }
 
 impl<'a> Iterator for VertexVertexCirculator<'a> {
     type Item = VertexHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Infinite loop protection
+        if self.iteration_count >= self.max_iterations {
+            return None;
+        }
+        self.iteration_count += 1;
+
         // Check if we've completed the cycle (after first iteration)
         if !self.first && self.current_heh == self.start_heh {
             return None;
@@ -39,11 +47,14 @@ impl<'a> Iterator for VertexVertexCirculator<'a> {
 impl<'a> RustMesh {
     pub fn vertex_vertices(&'a self, vh: VertexHandle) -> Option<VertexVertexCirculator<'a>> {
         let start_heh = self.halfedge_handle(vh)?;
+        let max_iterations = self.n_halfedges().max(1000);
         Some(VertexVertexCirculator {
             mesh: self,
             start_heh,
             current_heh: start_heh,
             first: true,
+            iteration_count: 0,
+            max_iterations,
         })
     }
 }
@@ -54,6 +65,8 @@ pub struct VertexFaceCirculator<'a> {
     start_heh: HalfedgeHandle,
     current_heh: HalfedgeHandle,
     first: bool,
+    iteration_count: usize,
+    max_iterations: usize,
 }
 
 impl<'a> Iterator for VertexFaceCirculator<'a> {
@@ -61,11 +74,17 @@ impl<'a> Iterator for VertexFaceCirculator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
+            // Infinite loop protection
+            if self.iteration_count >= self.max_iterations {
+                return None;
+            }
+            self.iteration_count += 1;
+
             // Check if we've completed the cycle
             if !self.first && self.current_heh == self.start_heh {
                 return None;
             }
-            
+
             // Skip invalid halfedges
             if !self.current_heh.is_valid() {
                 return None;
@@ -76,18 +95,18 @@ impl<'a> Iterator for VertexFaceCirculator<'a> {
 
             // Move to next outgoing halfedge around the vertex
             let incoming = self.mesh.opposite_halfedge_handle(self.current_heh);
-            
+
             // Check if incoming is valid before proceeding
             if !incoming.is_valid() {
                 self.first = false;
                 return None;
             }
-            
+
             let next_heh = self.mesh.prev_halfedge_handle(incoming);
 
             self.first = false;
             self.current_heh = next_heh;
-            
+
             // Return face if valid (skip boundary halfedges that have no face)
             if let Some(face) = fh {
                 return Some(face);
@@ -100,11 +119,14 @@ impl<'a> Iterator for VertexFaceCirculator<'a> {
 impl<'a> RustMesh {
     pub fn vertex_faces(&'a self, vh: VertexHandle) -> Option<VertexFaceCirculator<'a>> {
         let start_heh = self.halfedge_handle(vh)?;
+        let max_iterations = self.n_halfedges().max(1000);
         Some(VertexFaceCirculator {
             mesh: self,
             start_heh,
             current_heh: start_heh,
             first: true,
+            iteration_count: 0,
+            max_iterations,
         })
     }
 }
@@ -115,30 +137,38 @@ pub struct VertexHalfedgeIter<'a> {
     start_heh: HalfedgeHandle,
     current_heh: HalfedgeHandle,
     first: bool,
+    iteration_count: usize,
+    max_iterations: usize,
 }
 
 impl<'a> Iterator for VertexHalfedgeIter<'a> {
     type Item = HalfedgeHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Infinite loop protection
+        if self.iteration_count >= self.max_iterations {
+            return None;
+        }
+        self.iteration_count += 1;
+
         if !self.first && self.current_heh == self.start_heh {
             return None;
         }
-        
+
         let heh = self.current_heh;
-        
+
         // Get the opposite halfedge (incoming to our vertex)
         let incoming = self.mesh.opposite_halfedge_handle(self.current_heh);
-        
+
         // Get previous halfedge in the face cycle (going counter-clockwise)
         let prev_incoming = self.mesh.prev_halfedge_handle(incoming);
-        
+
         // The previous of incoming is another outgoing halfedge from our vertex
         // But we need to check if prev_incoming is valid and different
         if prev_incoming == incoming || !prev_incoming.is_valid() {
             return None;
         }
-        
+
         self.first = false;
         self.current_heh = prev_incoming;
 
@@ -149,11 +179,14 @@ impl<'a> Iterator for VertexHalfedgeIter<'a> {
 impl<'a> RustMesh {
     pub fn vertex_halfedges(&'a self, vh: VertexHandle) -> Option<VertexHalfedgeIter<'a>> {
         let start_heh = self.halfedge_handle(vh)?;
+        let max_iterations = self.n_halfedges().max(1000);
         Some(VertexHalfedgeIter {
             mesh: self,
             start_heh,
             current_heh: start_heh,
             first: true,
+            iteration_count: 0,
+            max_iterations,
         })
     }
 }
@@ -188,24 +221,32 @@ pub struct FaceVertexCirculator<'a> {
     start_heh: HalfedgeHandle,
     current_heh: HalfedgeHandle,
     done: bool,
+    iteration_count: usize,
+    max_iterations: usize,
 }
 
 impl<'a> Iterator for FaceVertexCirculator<'a> {
     type Item = VertexHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Infinite loop protection
+        if self.iteration_count >= self.max_iterations {
+            return None;
+        }
+        self.iteration_count += 1;
+
         if self.done {
             return None;
         }
-        
+
         let vh = self.mesh.from_vertex_handle(self.current_heh);
-        
+
         self.current_heh = self.mesh.next_halfedge_handle(self.current_heh);
-        
+
         if self.current_heh == self.start_heh {
             self.done = true;
         }
-        
+
         Some(vh)
     }
 }
@@ -213,11 +254,14 @@ impl<'a> Iterator for FaceVertexCirculator<'a> {
 impl<'a> RustMesh {
     pub fn face_vertices(&'a self, fh: FaceHandle) -> Option<FaceVertexCirculator<'a>> {
         let start_heh = self.face_halfedge_handle(fh)?;
+        let max_iterations = self.n_halfedges().max(1000);
         Some(FaceVertexCirculator {
             mesh: self,
             start_heh,
             current_heh: start_heh,
             done: false,
+            iteration_count: 0,
+            max_iterations,
         })
     }
 }
@@ -228,24 +272,32 @@ pub struct FaceHalfedgeIter<'a> {
     start_heh: HalfedgeHandle,
     current_heh: HalfedgeHandle,
     done: bool,
+    iteration_count: usize,
+    max_iterations: usize,
 }
 
 impl<'a> Iterator for FaceHalfedgeIter<'a> {
     type Item = HalfedgeHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Infinite loop protection
+        if self.iteration_count >= self.max_iterations {
+            return None;
+        }
+        self.iteration_count += 1;
+
         if self.done {
             return None;
         }
 
         let heh = self.current_heh;
         self.current_heh = self.mesh.next_halfedge_handle(self.current_heh);
-        
+
         // Check if we've completed the cycle AFTER advancing
         if self.current_heh == self.start_heh {
             self.done = true;
         }
-        
+
         Some(heh)
     }
 }
@@ -253,11 +305,14 @@ impl<'a> Iterator for FaceHalfedgeIter<'a> {
 impl<'a> RustMesh {
     pub fn face_halfedges(&'a self, fh: FaceHandle) -> Option<FaceHalfedgeIter<'a>> {
         let start_heh = self.face_halfedge_handle(fh)?;
+        let max_iterations = self.n_halfedges().max(1000);
         Some(FaceHalfedgeIter {
             mesh: self,
             start_heh,
             current_heh: start_heh,
             done: false,
+            iteration_count: 0,
+            max_iterations,
         })
     }
 }
@@ -292,25 +347,33 @@ pub struct FaceFaceCirculator<'a> {
     start_heh: HalfedgeHandle,
     current_heh: HalfedgeHandle,
     done: bool,
+    iteration_count: usize,
+    max_iterations: usize,
 }
 
 impl<'a> Iterator for FaceFaceCirculator<'a> {
     type Item = FaceHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Infinite loop protection
+        if self.iteration_count >= self.max_iterations {
+            return None;
+        }
+        self.iteration_count += 1;
+
         if self.done {
             return None;
         }
-        
+
         let opposite = self.mesh.opposite_halfedge_handle(self.current_heh);
         let fh = self.mesh.face_handle(opposite);
-        
+
         self.current_heh = self.mesh.next_halfedge_handle(self.current_heh);
-        
+
         if self.current_heh == self.start_heh {
             self.done = true;
         }
-        
+
         fh
     }
 }
@@ -318,11 +381,14 @@ impl<'a> Iterator for FaceFaceCirculator<'a> {
 impl<'a> RustMesh {
     pub fn face_faces(&'a self, fh: FaceHandle) -> Option<FaceFaceCirculator<'a>> {
         let start_heh = self.face_halfedge_handle(fh)?;
+        let max_iterations = self.n_halfedges().max(1000);
         Some(FaceFaceCirculator {
             mesh: self,
             start_heh,
             current_heh: start_heh,
             done: false,
+            iteration_count: 0,
+            max_iterations,
         })
     }
 }

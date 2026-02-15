@@ -55,18 +55,31 @@
 
 ## P1 修复状态
 
-### ❌ 未修复
+### ✅ 已修复（2/19）
 
-#### 1. `soa_kernel.rs` — `delete_edge()` 不更新 `edge_map`
-**状态**：❌ 未修复
+#### 1. `soa_kernel.rs:delete_edge` — 不更新 `edge_map`
+**状态**：✅ 已修复（2026-02-15）
 **位置**：第 549-555 行
 **问题**：只标记 halfedge 为无效，但 `edge_map` HashMap 未移除条目
-**影响**：后续 `add_edge()` 会找到已删除的 edge。
+**解决方案**：在标记 halfedge 为无效前，先获取两个顶点，然后从 edge_map 中移除对应条目
+**影响**：修复后，后续 `add_edge()` 不会找到已删除的 edge
 
 #### 2. `circulators.rs` — 所有 circulator 缺少死循环保护
-**状态**：❌ 未修复
+**状态**：✅ 已修复（2026-02-15）
 **问题**：如果 halfedge 结构损坏，所有 circulator 都会无限循环
-**建议**：加最大迭代次数保护（如 `n_halfedges()` 或固定上限 1000）。
+**解决方案**：为所有 6 个 circulator/iterator 添加 iteration_count 和 max_iterations 字段
+  - VertexVertexCirculator
+  - VertexFaceCirculator
+  - VertexHalfedgeIter
+  - FaceVertexCirculator
+  - FaceHalfedgeIter
+  - FaceFaceCirculator
+  - (VertexEdgeIter 和 FaceEdgeIter 通过内部 iterator 间接保护)
+**最大迭代次数**：`max(n_halfedges(), 1000)`
+
+---
+
+### ❌ 未修复
 
 #### 3-19. 其他 P1 问题
 未在本次审查中检查。
