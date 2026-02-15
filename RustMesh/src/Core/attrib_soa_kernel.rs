@@ -882,6 +882,61 @@ impl AttribSoAKernel {
         }
     }
 
+    /// Set f32 property value
+    pub fn set_property_f32(&mut self, handle: PropHandle, idx: usize, value: f32) {
+        if let Some(prop) = self.dynamic_props.get_mut(&handle.id) {
+            if let DynamicProperty::Float(v) = prop {
+                if let Some(v) = v.get_mut(idx) {
+                    *v = value;
+                }
+            }
+        }
+    }
+
+    /// Set Vec2 property value
+    pub fn set_property_vec2(&mut self, handle: PropHandle, idx: usize, value: Vec2) {
+        if let Some(prop) = self.dynamic_props.get_mut(&handle.id) {
+            if let DynamicProperty::Vec2(v) = prop {
+                if let Some(v) = v.get_mut(idx) {
+                    *v = value;
+                }
+            }
+        }
+    }
+
+    /// Set Vec3 property value
+    pub fn set_property_vec3(&mut self, handle: PropHandle, idx: usize, value: Vec3) {
+        if let Some(prop) = self.dynamic_props.get_mut(&handle.id) {
+            if let DynamicProperty::Vec3(v) = prop {
+                if let Some(v) = v.get_mut(idx) {
+                    *v = value;
+                }
+            }
+        }
+    }
+
+    /// Set Vec4 property value
+    pub fn set_property_vec4(&mut self, handle: PropHandle, idx: usize, value: Vec4) {
+        if let Some(prop) = self.dynamic_props.get_mut(&handle.id) {
+            if let DynamicProperty::Vec4(v) = prop {
+                if let Some(v) = v.get_mut(idx) {
+                    *v = value;
+                }
+            }
+        }
+    }
+
+    /// Set i32 property value
+    pub fn set_property_i32(&mut self, handle: PropHandle, idx: usize, value: i32) {
+        if let Some(prop) = self.dynamic_props.get_mut(&handle.id) {
+            if let DynamicProperty::Int(v) = prop {
+                if let Some(v) = v.get_mut(idx) {
+                    *v = value;
+                }
+            }
+        }
+    }
+
     /// Check if property exists
     pub fn has_property(&self, handle: PropHandle) -> bool {
         self.dynamic_props.contains_key(&handle.id)
