@@ -5,142 +5,142 @@
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License">
 </p>
 
-用 Rust 语言实现的 3D Scanner 全套算法库。
+A complete 3D scanning and reconstruction technology stack implemented in pure Rust.
 
-## 项目目标
+## Project Goals
 
-打造一个纯 Rust 实现的 3D 扫描与重建技术栈，涵盖从数据获取到网格处理的完整流程。
+Build a pure Rust implementation of 3D scanning and reconstruction technology, covering the complete pipeline from data acquisition to mesh processing.
 
 ```
-Pipeline: 相机输入 → RustSLAM → 3DGS 融合 → 网格抽取 → RustMesh 后处理 → 导出
+Pipeline: Camera Input → RustSLAM → 3DGS Fusion → Mesh Extraction → RustMesh Post-processing → Export
 ```
 
 ---
 
-## 核心模块
+## Core Modules
 
-### 🟩 RustMesh (网格处理)
+### 🟩 RustMesh (Mesh Processing)
 
-**核心网格表示与几何处理算法库**
+**Core mesh representation and geometric processing library**
 
-- 网格数据结构 (Half-edge, SoA 布局)
-- IO 格式支持 (OBJ, OFF, PLY, STL, OM)
-- 网格算法
-  - 细分 (Loop, Catmull-Clark, Sqrt3)
-  - 简化 (Decimation + Quadric 误差)
-  - 光滑 (Laplace, Tangential)
-  - 孔洞填充
-  - 网格修复
-  - 对偶变换
-  - 渐进网格 (VDPM)
-- Smart Handle 导航系统
-- 属性系统
+- Mesh data structures (Half-edge, SoA layout)
+- IO format support (OBJ, OFF, PLY, STL, OM)
+- Mesh algorithms
+  - Subdivision (Loop, Catmull-Clark, Sqrt3)
+  - Simplification (Decimation + Quadric error)
+  - Smoothing (Laplace, Tangential)
+  - Hole filling
+  - Mesh repair
+  - Dualization
+  - Progressive mesh (VDPM)
+- Smart Handle navigation system
+- Attribute system
 
-**进度: ~85%** | [详细](./RustMesh/README.md)
-
----
-
-### 🟩 RustSLAM (视觉 SLAM)
-
-**纯 Rust 实现的视觉 SLAM 库**
-
-- 特征提取 (ORB, AKAZE, SuperPoint)
-- 视觉里程计 (VO + PnP)
-- 局部建图 (三角化 + BA)
-- 回环检测 (BoW)
-- **3D Gaussian Splatting** - 实时/离线稠密重建
-- SLAM + 3DGS 融合
-
-**技术栈**:
-- opencv-rust: 图像处理
-- glam: SIMD 数学库
-- candle: PyTorch 绑定 + Metal GPU
-- apex-solver: 图优化
-- g2o-rs: 图优化
-
-**进度: ~85%** | [详细](./RustSLAM/README.md)
+**Progress: ~85%** | [Details](./RustMesh/README.md)
 
 ---
 
-### ⬜ RustGUI (GUI + 3D 渲染)
+### 🟩 RustSLAM (Visual SLAM)
 
-**待开发 - 计划使用 egui + wgpu**
+**Pure Rust implementation of Visual SLAM library**
 
-- 实时 3D 可视化
-- GUI 界面
-- 相机控制
+- Feature extraction (ORB, AKAZE, SuperPoint)
+- Visual Odometry (VO + PnP)
+- Local mapping (Triangulation + BA)
+- Loop closing (BoW)
+- **3D Gaussian Splatting** - Real-time/offline dense reconstruction
+- SLAM + 3DGS fusion
 
-**进度: 0%**
+**Tech Stack**:
+- opencv-rust: Image processing
+- glam: SIMD math library
+- candle: PyTorch bindings + Metal GPU
+- apex-solver: Graph optimization
+- g2o-rs: Graph optimization
+
+**Progress: ~85%** | [Details](./RustSLAM/README.md)
 
 ---
 
-## 完整流水线
+### ⬜ RustGUI (GUI + 3D Rendering)
+
+**To be developed - Planned using egui + wgpu**
+
+- Real-time 3D visualization
+- GUI interface
+- Camera control
+
+**Progress: 0%**
+
+---
+
+## Complete Pipeline
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    3D Scanning Pipeline                         │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  [数据获取] → [SLAM] → [3DGS] → [Mesh抽取] → [后处理] → [导出] │
+│  [Acquisition] → [SLAM] → [3DGS] → [Mesh Extract] → [Post] → [Export] │
 │                      ↓                                          │
-│                 实时渲染                                         │
+│                 Real-time Rendering                             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 模块设计
+## Module Design
 
 ```
 RustScan/
-├── RustMesh/           # 核心网格库 (~85%)
-│   ├── Core/           # 基础数据结构
-│   │   ├── handles.rs      # Handle 系统
-│   │   ├── connectivity.rs  # 连接关系
-│   │   ├── soa_kernel.rs  # SoA 存储
+├── RustMesh/           # Core mesh library (~85%)
+│   ├── Core/           # Basic data structures
+│   │   ├── handles.rs      # Handle system
+│   │   ├── connectivity.rs  # Connectivity relations
+│   │   ├── soa_kernel.rs  # SoA storage
 │   │   ├── smart_handles.rs # Smart Handle
-│   │   └── om_format.rs    # OM 格式
-│   ├── Tools/          # 网格算法
-│   │   ├── decimation.rs   # 简化
-│   │   ├── subdivision.rs  # 细分
-│   │   ├── smoother.rs    # 平滑
-│   │   ├── hole_filling.rs # 孔洞填充
+│   │   └── om_format.rs    # OM format
+│   ├── Tools/          # Mesh algorithms
+│   │   ├── decimation.rs   # Simplification
+│   │   ├── subdivision.rs  # Subdivision
+│   │   ├── smoother.rs    # Smoothing
+│   │   ├── hole_filling.rs # Hole filling
 │   │   └── ...
-│   └── Utils/          # 工具
+│   └── Utils/          # Utilities
 │
 ├── RustSLAM/           # SLAM + 3DGS (~85%)
-│   ├── core/           # 核心结构
-│   │   ├── frame.rs       # 帧
-│   │   ├── keyframe.rs    # 关键帧
-│   │   ├── map_point.rs   # 地图点
-│   │   └── camera.rs      # 相机模型
-│   ├── features/        # 特征提取
+│   ├── core/           # Core structures
+│   │   ├── frame.rs       # Frame
+│   │   ├── keyframe.rs    # KeyFrame
+│   │   ├── map_point.rs   # MapPoint
+│   │   └── camera.rs      # Camera model
+│   ├── features/        # Feature extraction
 │   │   ├── orb.rs         # ORB
 │   │   └── pure_rust.rs   # Harris/FAST
-│   ├── tracker/         # 视觉里程计
-│   ├── optimizer/       # BA 优化
-│   ├── loop_closing/    # 回环检测
-│   └── fusion/          # 3DGS 融合
-│       ├── gaussian.rs    # 高斯数据结构
-│       ├── renderer.rs    # 渲染器
-│       └── trainer.rs      # 训练
+│   ├── tracker/         # Visual Odometry
+│   ├── optimizer/       # BA optimization
+│   ├── loop_closing/    # Loop closing
+│   └── fusion/          # 3DGS fusion
+│       ├── gaussian.rs    # Gaussian data structures
+│       ├── renderer.rs    # Renderer
+│       └── trainer.rs      # Training
 │
-└── RustGUI/            # GUI (待开发)
+└── RustGUI/            # GUI (to be developed)
 ```
 
 ---
 
-## 技术栈
+## Tech Stack
 
-- **语言**: Rust 2021
-- **数学库**: glam (SIMD 加速)
+- **Language**: Rust 2021
+- **Math Library**: glam (SIMD accelerated)
 - **GPU**: wgpu, candle-metal
-- **多线程**: rayon
-- **对标**: OpenMesh, Open3D, ORB-SLAM3
+- **Multithreading**: rayon
+- **Comparable to**: OpenMesh, Open3D, ORB-SLAM3
 
 ---
 
-## 快速开始
+## Quick Start
 
 ### RustMesh
 
@@ -162,15 +162,15 @@ cargo test
 
 ---
 
-## 进度总览
+## Progress Overview
 
-| 模块 | 完成度 | 优先级 | 说明 |
+| Module | Completion | Priority | Notes |
 |------|--------|--------|------|
-| **RustSLAM** | ~85% | P0 | 核心 SLAM + 3DGS 完备 |
-| **RustMesh** | ~85% | P1 | 基础扎实，所有测试通过 |
-| **RustGUI** | 0% | P2 | 待启动 |
+| **RustSLAM** | ~85% | P0 | Core SLAM + 3DGS complete |
+| **RustMesh** | ~85% | P1 | Solid foundation, all tests passing |
+| **RustGUI** | 0% | P2 | To be started |
 
-### RustSLAM 完成清单
+### RustSLAM Checklist
 
 - [x] SE3 Pose
 - [x] ORB Feature Extraction
@@ -191,42 +191,42 @@ cargo test
 - [x] Training Pipeline
 - [x] SLAM Integration
 
-### RustMesh 完成清单
+### RustMesh Checklist
 
-- [x] Handle 系统
-- [x] Half-edge 数据结构
-- [x] SoA 内存布局
+- [x] Handle system
+- [x] Half-edge data structure
+- [x] SoA memory layout
 - [x] OFF/OBJ/PLY/STL IO
-- [x] MTL 材质支持
-- [x] OM 格式 (基础)
-- [x] Smart Handle 系统
-- [x] EdgeFace 循环器
+- [x] MTL material support
+- [x] OM format (basic)
+- [x] Smart Handle system
+- [x] EdgeFace circulators
 - [x] Quadric Decimation
-- [x] Loop/Catmull-Clark/√3 细分
-- [x] Laplace/Tangential 平滑
+- [x] Loop/Catmull-Clark/√3 subdivision
+- [x] Laplace/Tangential smoothing
 - [x] Hole Filling
 - [x] Mesh Repair
-- [x] VDPM 基础
+- [x] VDPM basics
 
 ---
 
-## 优先级
+## Priorities
 
-| 优先级 | 模块 | 说明 |
+| Priority | Module | Notes |
 |--------|------|------|
-| P0 | SLAM | 核心，同时定位与建图 |
-| P1 | 网格后处理 | 3DGS → Mesh 抽取 |
-| P2 | 表面重建 | Poisson、Ball-Pivoting |
-| P3 | RustGUI | 可视化界面 |
-| P4 | 纹理映射 | UV 展开 + 贴图 |
+| P0 | SLAM | Core, simultaneous localization and mapping |
+| P1 | Mesh post-processing | 3DGS → Mesh extraction |
+| P2 | Surface reconstruction | Poisson, Ball-Pivoting |
+| P3 | RustGUI | Visualization interface |
+| P4 | Texture mapping | UV unwrapping + texturing |
 
 ---
 
-## 参考
+## References
 
-- [OpenMesh](https://www.openmesh.org/) - C++ 网格处理库
-- [ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3) - 视觉 SLAM
-- [Open3D](http://www.open3d.org/) - 3D 重建库
+- [OpenMesh](https://www.openmesh.org/) - C++ mesh processing library
+- [ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3) - Visual SLAM
+- [Open3D](http://www.open3d.org/) - 3D reconstruction library
 - [SplaTAM](https://github.com/spla-tam/SplaTAM) - 3DGS SLAM (CVPR 2024)
 - [RTG-SLAM](https://github.com/MisEty/RTG-SLAM) - Real-time 3DGS
 - [PensieveRust](https://github.com/sukie91/PensieveRust) - 3D Gaussian Splatting

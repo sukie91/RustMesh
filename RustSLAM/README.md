@@ -118,17 +118,17 @@ test result: ok. 77 passed, 0 failed
 ### Phase 2: Dense Reconstruction ✅ COMPLETE
 - [x] 3D Gaussian data structures
 - [x] Gaussian Renderer (color + depth)
-- [x] **Tiled Rasterization** (完整光栅化!)
-- [x] **Depth Sorting** (深度排序)
-- [x] **Alpha Blending** (alpha 混合)
+- [x] **Tiled Rasterization**
+- [x] **Depth Sorting**
+- [x] **Alpha Blending**
 - [x] Gaussian Tracking (ICP)
 - [x] Incremental Gaussian Mapping
-- [x] **Densification** (高斯分裂)
-- [x] **Pruning** (透明度裁剪)
+- [x] **Densification** (Gaussian splitting)
+- [x] **Pruning** (Opacity-based)
 - [x] Differentiable Renderer (Candle + Metal MPS)
 - [x] Training Pipeline (Trainer + Adam optimizer)
 - [x] TRUE Backward Propagation (Var + backward() + gradients.get())
-- [x] **SLAM Integration** (Sparse + Dense 融合!)
+- [x] **SLAM Integration** (Sparse + Dense fusion)
 
 ### Phase 3: Advanced Features
 - [ ] IMU Integration
