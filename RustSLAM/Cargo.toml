@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 # 图像处理 (可选)
-opencv = { version = "0.98", optional = true }
+opencv = { version = "0.98", optional = true, features = ["videoio", "imgproc"] }
 
 # Bundle Adjustment (apex-solver)
 apex-solver = "1.0"

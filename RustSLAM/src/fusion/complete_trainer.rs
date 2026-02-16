@@ -144,6 +144,11 @@ impl CompleteTrainer {
         }
     }
 
+    /// Get training device
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
     /// Initialize Adam optimizer state
     fn init_adam_state(&mut self, n: usize) {
         let eps = 1e-8;

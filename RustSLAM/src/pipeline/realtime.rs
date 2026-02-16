@@ -20,11 +20,15 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::core::{Camera, SE3};
-use crate::fusion::GaussianMapper;
+use crate::fusion::{CompleteTrainer, DiffCamera, GaussianMapper, TrainableGaussians};
 use crate::io::{Dataset, Frame};
+use crate::optimizer::ba::{BACamera, BAObservation, BALandmark, BundleAdjuster};
+use candle_core::Device;
+#[cfg(feature = "opencv")]
+use std::path::Path;
 
 /// Message sent from Tracking thread to Mapping thread
 #[derive(Debug, Clone)]
@@ -46,8 +50,8 @@ pub struct MappingMessage {
     pub keyframe_index: usize,
     /// Keyframe pose
     pub pose: SE3,
-    /// Camera intrinsics
-    pub camera: Camera,
+    /// Keyframe data
+    pub frame: Frame,
 }
 
 /// Pipeline configuration
@@ -187,6 +191,13 @@ impl RealtimePipeline {
     pub fn state(&self) -> &PipelineState {
         &self.state
     }
+
+    #[cfg(feature = "opencv")]
+    pub fn start_video<P: AsRef<Path>>(&mut self, path: P) -> Result<(), crate::io::VideoError> {
+        let loader = crate::io::VideoLoader::open(path)?;
+        self.start(loader);
+        Ok(())
+    }
 }
 
 impl Default for RealtimePipeline {
@@ -258,8 +269,9 @@ fn mapping_thread_main(
         match track_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(msg) => {
                 if msg.success && msg.frame.index % keyframe_interval == 0 {
-                    if let Some(depth) = &msg.frame.depth {
-                        let color: Vec<[u8; 3]> = msg.frame.color
+                    let frame = msg.frame;
+                    if let Some(depth) = &frame.depth {
+                        let color: Vec<[u8; 3]> = frame.color
                             .chunks(3)
                             .map(|c| [c[0], c[1], c[2]])
                             .collect();
@@ -269,8 +281,8 @@ fn mapping_thread_main(
                         let _ = mapper.update(
                             depth,
                             &color,
-                            msg.frame.width as usize,
-                            msg.frame.height as usize,
+                            frame.width as usize,
+                            frame.height as usize,
                             camera.focal.x,
                             camera.focal.y,
                             camera.principal.x,
@@ -281,9 +293,9 @@ fn mapping_thread_main(
                     }
 
                     let _ = map_tx.send(MappingMessage {
-                        keyframe_index: msg.frame.index,
+                        keyframe_index: frame.index,
                         pose: msg.pose,
-                        camera: camera.clone(),
+                        frame,
                     });
                 }
             }
@@ -302,6 +314,15 @@ fn optimization_thread_main(
     map_rx: Receiver<MappingMessage>,
     stop_flag: Arc<AtomicBool>,
 ) {
+    let mut trainer: Option<CompleteTrainer> = None;
+    let mut trainer_dims: Option<(usize, usize)> = None;
+    let mut last_train = Instant::now();
+
+    let mut ba = BundleAdjuster::new();
+    let mut ba_cameras = 0usize;
+    let mut ba_landmarks = 0usize;
+    let mut ba_observations = 0usize;
+
     loop {
         // Check for stop signal
         if stop_flag.load(Ordering::Relaxed) {
@@ -310,11 +331,61 @@ fn optimization_thread_main(
 
         // Try to receive mapping message
         match map_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(_msg) => {
-                // In real implementation:
-                // 1. Run BA optimization
-                // 2. Run 3DGS training step
-                // 3. Densify/prune if needed
+            Ok(msg) => {
+                let frame = msg.frame;
+                let (width, height) = (frame.width as usize, frame.height as usize);
+
+                // Run lightweight BA (best-effort) on sampled depth points
+                let (c_added, l_added, o_added) = add_ba_observations(
+                    &mut ba,
+                    &msg.pose,
+                    &frame,
+                    20,
+                    200,
+                );
+                ba_cameras += c_added;
+                ba_landmarks += l_added;
+                ba_observations += o_added;
+
+                if ba_cameras >= 2 && ba_observations >= 100 {
+                    let _ = ba.optimize(5);
+                    ba = BundleAdjuster::new();
+                    ba_cameras = 0;
+                    ba_landmarks = 0;
+                    ba_observations = 0;
+                }
+
+                // 3DGS training step (best-effort)
+                if last_train.elapsed() >= Duration::from_millis(500) {
+                    if trainer_dims != Some((width, height)) {
+                        trainer = Some(CompleteTrainer::new(
+                            width,
+                            height,
+                            0.00016,
+                            0.005,
+                            0.001,
+                            0.05,
+                            0.0025,
+                        ));
+                        trainer_dims = Some((width, height));
+                    }
+
+                    if let Some(trainer) = trainer.as_mut() {
+                        let device = trainer.device().clone();
+                        if let Some((mut gaussians, camera, target_color, target_depth)) =
+                            build_training_batch(&frame, &device, 4, 5000)
+                        {
+                            let _ = trainer.training_step(
+                                &mut gaussians,
+                                &camera,
+                                &target_color,
+                                &target_depth,
+                            );
+                        }
+                    }
+
+                    last_train = Instant::now();
+                }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 // Continue waiting
@@ -324,6 +395,162 @@ fn optimization_thread_main(
             }
         }
     }
+}
+
+fn build_training_batch(
+    frame: &Frame,
+    device: &Device,
+    sample_step: usize,
+    max_gaussians: usize,
+) -> Option<(TrainableGaussians, DiffCamera, Vec<f32>, Vec<f32>)> {
+    let depth = frame.depth.as_ref()?;
+    let width = frame.width as usize;
+    let height = frame.height as usize;
+    if depth.len() != width * height {
+        return None;
+    }
+
+    let fx = frame.camera.focal.x;
+    let fy = frame.camera.focal.y;
+    let cx = frame.camera.principal.x;
+    let cy = frame.camera.principal.y;
+
+    let mut positions = Vec::new();
+    let mut scales = Vec::new();
+    let mut rotations = Vec::new();
+    let mut opacities = Vec::new();
+    let mut colors = Vec::new();
+
+    for y in (0..height).step_by(sample_step) {
+        for x in (0..width).step_by(sample_step) {
+            let idx = y * width + x;
+            let z = depth[idx];
+            if z <= 0.0 {
+                continue;
+            }
+
+            let x_cam = (x as f32 - cx) * z / fx;
+            let y_cam = (y as f32 - cy) * z / fy;
+
+            positions.extend_from_slice(&[x_cam, y_cam, z]);
+            scales.extend_from_slice(&[-3.0, -3.0, -3.0]);
+            rotations.extend_from_slice(&[1.0, 0.0, 0.0, 0.0]);
+            opacities.push(0.5);
+
+            let cidx = idx * 3;
+            if cidx + 2 < frame.color.len() {
+                colors.push(frame.color[cidx] as f32 / 255.0);
+                colors.push(frame.color[cidx + 1] as f32 / 255.0);
+                colors.push(frame.color[cidx + 2] as f32 / 255.0);
+            } else {
+                colors.extend_from_slice(&[0.5, 0.5, 0.5]);
+            }
+
+            if positions.len() / 3 >= max_gaussians {
+                break;
+            }
+        }
+        if positions.len() / 3 >= max_gaussians {
+            break;
+        }
+    }
+
+    if positions.is_empty() {
+        return None;
+    }
+
+    let gaussians = TrainableGaussians::new(
+        &positions,
+        &scales,
+        &rotations,
+        &opacities,
+        &colors,
+        device,
+    ).ok()?;
+
+    let rotation = [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let translation = [0.0, 0.0, 0.0];
+    let camera = DiffCamera::new(
+        fx, fy, cx, cy,
+        width, height,
+        &rotation,
+        &translation,
+        device,
+    ).ok()?;
+
+    let target_color: Vec<f32> = frame.color
+        .iter()
+        .map(|v| *v as f32 / 255.0)
+        .collect();
+
+    Some((gaussians, camera, target_color, depth.clone()))
+}
+
+fn add_ba_observations(
+    ba: &mut BundleAdjuster,
+    pose: &SE3,
+    frame: &Frame,
+    sample_step: usize,
+    max_points: usize,
+) -> (usize, usize, usize) {
+    let depth = match &frame.depth {
+        Some(d) => d,
+        None => return (0, 0, 0),
+    };
+
+    let width = frame.width as usize;
+    let height = frame.height as usize;
+    if depth.len() != width * height {
+        return (0, 0, 0);
+    }
+
+    let fx = frame.camera.focal.x;
+    let fy = frame.camera.focal.y;
+    let cx = frame.camera.principal.x;
+    let cy = frame.camera.principal.y;
+
+    let cam_idx = ba.add_camera(
+        BACamera::new(fx as f64, fy as f64, cx as f64, cy as f64)
+            .with_pose(*pose)
+    );
+
+    let rot = pose.rotation();
+    let t = pose.translation();
+
+    let mut added_landmarks = 0usize;
+    let mut added_obs = 0usize;
+
+    'outer: for y in (0..height).step_by(sample_step) {
+        for x in (0..width).step_by(sample_step) {
+            let idx = y * width + x;
+            let z = depth[idx];
+            if z <= 0.0 {
+                continue;
+            }
+
+            let x_cam = (x as f32 - cx) * z / fx;
+            let y_cam = (y as f32 - cy) * z / fy;
+
+            let wx = rot[0][0] * x_cam + rot[0][1] * y_cam + rot[0][2] * z + t[0];
+            let wy = rot[1][0] * x_cam + rot[1][1] * y_cam + rot[1][2] * z + t[1];
+            let wz = rot[2][0] * x_cam + rot[2][1] * y_cam + rot[2][2] * z + t[2];
+
+            let lm_idx = ba.add_landmark(BALandmark::new(wx as f64, wy as f64, wz as f64));
+            ba.add_observation(cam_idx, lm_idx, BAObservation::new(x as f64, y as f64));
+            added_landmarks += 1;
+            added_obs += 1;
+
+            if added_landmarks >= max_points {
+                break 'outer;
+            }
+        }
+    }
+
+    (1, added_landmarks, added_obs)
 }
 
 fn rgb_to_grayscale(rgb: &[u8], width: usize, height: usize) -> Vec<u8> {
