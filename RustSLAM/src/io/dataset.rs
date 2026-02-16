@@ -362,7 +362,7 @@ impl TumRgbdDataset {
                 Vec::new()
             }
         } else {
-            HashMap::new()
+            Vec::new()
         };
 
         // Load camera calibration

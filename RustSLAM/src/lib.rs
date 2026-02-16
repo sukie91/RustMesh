@@ -9,7 +9,7 @@
 // Re-export core types
 pub use core::{Frame, FrameFeatures, KeyFrame, MapPoint, Map, Camera, SE3};
 pub use features::{FeatureExtractor, FeatureMatcher, KeyPoint, Descriptors, Match, OrbExtractor, KnnMatcher};
-pub use tracker::VisualOdometry;
+pub use tracker::{VisualOdometry, VOState, VOResult};
 
 // Modules
 pub mod core;
@@ -21,3 +21,6 @@ pub mod loop_closing;
 pub mod fusion;
 pub mod io;
 pub mod viewer;
+pub mod pipeline;
+pub mod depth;
+pub mod config;

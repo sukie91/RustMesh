@@ -3,6 +3,7 @@
 //! This module provides a KD-Tree based K-Nearest Neighbors matcher
 //! optimized for 32-dimensional feature descriptors (e.g., ORB).
 
+use crate::features::base::{FeatureMatcher, FeatureError, Descriptors, Match};
 use kiddo::KdTree;
 use kiddo::SquaredEuclidean;
 use std::collections::HashMap;
@@ -147,6 +148,62 @@ impl KnnMatcher {
     /// Get the number of descriptors in the tree
     pub fn size(&self) -> u64 {
         self.tree.size()
+    }
+
+    /// Convert Descriptors to f64 array format for KD-Tree matching
+    fn convert_descriptors(descriptors: &Descriptors) -> Vec<[f64; 32]> {
+        descriptors.data
+            .chunks(32)
+            .map(|chunk| {
+                let mut arr = [0.0; 32];
+                for (i, &byte) in chunk.iter().enumerate() {
+                    arr[i] = byte as f64;
+                }
+                arr
+            })
+            .collect()
+    }
+}
+
+impl FeatureMatcher for KnnMatcher {
+    fn match_descriptors(
+        &self,
+        query: &Descriptors,
+        train: &Descriptors,
+    ) -> Result<Vec<Match>, FeatureError> {
+        if query.is_empty() || train.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Convert to f64 arrays
+        let query_arrays = Self::convert_descriptors(query);
+        let train_arrays = Self::convert_descriptors(train);
+
+        // Build KD-Tree from training descriptors
+        let mut tree = KdTree::<f64, 32>::new();
+        for (idx, desc) in train_arrays.iter().enumerate() {
+            tree.add(desc, idx as u64);
+        }
+
+        // Match each query descriptor
+        let mut matches = Vec::new();
+        for (q_idx, q_desc) in query_arrays.iter().enumerate() {
+            let results = tree.nearest_n::<SquaredEuclidean>(q_desc, self.k);
+
+            if !results.is_empty() {
+                let best = &results[0];
+                // Use distance as match score (lower is better)
+                let distance = best.distance as f32;
+
+                matches.push(Match {
+                    query_idx: q_idx as u32,
+                    train_idx: best.item as u32,
+                    distance,
+                });
+            }
+        }
+
+        Ok(matches)
     }
 }
 

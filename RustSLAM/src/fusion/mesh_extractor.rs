@@ -207,15 +207,33 @@ impl MeshExtractor {
             }
         }
 
-        // Sort clusters by size
-        clusters.sort_by(|a, b| b.len().cmp(&a.len()));
+        let mut vertex_cluster = vec![usize::MAX; mesh.vertices.len()];
+        for (cluster_idx, cluster) in clusters.iter().enumerate() {
+            for &v in cluster {
+                vertex_cluster[v] = cluster_idx;
+            }
+        }
 
-        // Keep only largest clusters
+        let mut tri_counts = vec![0usize; clusters.len()];
+        for tri in &mesh.triangles {
+            let a = vertex_cluster[tri.indices[0]];
+            let b = vertex_cluster[tri.indices[1]];
+            let c = vertex_cluster[tri.indices[2]];
+            if a != usize::MAX && a == b && b == c {
+                tri_counts[a] += 1;
+            }
+        }
+
+        let mut cluster_indices: Vec<usize> = (0..clusters.len()).collect();
+        cluster_indices.sort_by(|a, b| tri_counts[*b].cmp(&tri_counts[*a]));
+
+        // Keep only largest clusters by triangle count
         let mut keep_vertices: HashSet<usize> = HashSet::new();
-
-        for (i, cluster) in clusters.iter().enumerate() {
-            if i < self.config.num_largest_clusters && cluster.len() >= self.config.min_cluster_size {
-                for &v in cluster {
+        for (rank, &cluster_idx) in cluster_indices.iter().enumerate() {
+            if rank < self.config.num_largest_clusters
+                && tri_counts[cluster_idx] >= self.config.min_cluster_size
+            {
+                for &v in &clusters[cluster_idx] {
                     keep_vertices.insert(v);
                 }
             }

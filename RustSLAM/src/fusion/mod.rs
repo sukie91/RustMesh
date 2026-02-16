@@ -10,6 +10,7 @@
 //! - diff_splat.rs: Complete differentiable splatting (Candle + Metal)
 //! - autodiff.rs: TRUE automatic differentiation with backward propagation
 //! - tiled_renderer.rs: Complete tiled rasterization
+//! - gpu_trainer.rs: GPU-accelerated trainer with minimal CPU-GPU transfer
 //! - slam_integrator.rs: Sparse-Dense SLAM integration
 //! - training_pipeline.rs: Complete training pipeline
 //! - tracker.rs: Gaussian-based tracking
@@ -35,6 +36,7 @@ pub mod complete_trainer;
 pub mod tsdf_volume;
 pub mod marching_cubes;
 pub mod mesh_extractor;
+pub mod gpu_trainer;
 
 pub use gaussian::{Gaussian3D, GaussianMap, GaussianCamera, GaussianState};
 pub use renderer::{GaussianRenderer, RenderOutput};
@@ -55,3 +57,4 @@ pub use complete_trainer::{CompleteTrainer, LrScheduler, TrainingResult as Compl
 pub use tsdf_volume::{TsdfVolume, TsdfConfig, Voxel};
 pub use marching_cubes::{Mesh, MeshVertex, MeshTriangle, MarchingCubes};
 pub use mesh_extractor::{MeshExtractor, MeshExtractionConfig};
+pub use gpu_trainer::{GpuTrainer, GpuTrainerConfig, GpuGaussianBuffer, SyncData, GpuAdamState, GpuTrainerBuilder};

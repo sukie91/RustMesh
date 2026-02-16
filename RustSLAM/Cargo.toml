@@ -22,8 +22,13 @@ glam = "0.25"
 # 并发
 rayon = "1.8"
 
+# 线程间通信 (用于实时管道)
+crossbeam-channel = "0.5"
+
 # 序列化
 serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+toml = "0.8"
 
 # 日志
 log = "0.4"

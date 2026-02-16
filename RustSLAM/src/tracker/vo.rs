@@ -77,8 +77,41 @@ pub struct VisualOdometry {
 }
 
 impl VisualOdometry {
-    /// Create a new VO
-    pub fn new(
+    /// Create a new VO with default feature extraction
+    pub fn new(camera: Camera) -> Self {
+        // Use default ORB extractor
+        let extractor = Box::new(crate::features::OrbExtractor::new(2000));
+        let matcher = Box::new(crate::features::KnnMatcher::new(2));
+
+        // Get intrinsics from camera
+        let fx = camera.focal.x;
+        let fy = camera.focal.y;
+        let cx = camera.principal.x;
+        let cy = camera.principal.y;
+
+        let pnp_solver = PnPSolver::new(fx, fy, cx, cy);
+
+        Self {
+            extractor,
+            matcher,
+            camera,
+            state: VOState::NotInitialized,
+            pnp_solver,
+            essential_solver: EssentialSolver::new(),
+            triangulator: Triangulator::new(),
+            prev_frame_id: None,
+            prev_frame_pose: None,
+            prev_keypoints: Vec::new(),
+            prev_descriptors: Descriptors::new(),
+            prev_3d_points: Vec::new(),
+            frame_count: 0,
+            min_matches: 20,
+            min_inliers: 10,
+        }
+    }
+
+    /// Create a new VO with custom extractor and matcher
+    pub fn with_extractor(
         extractor: Box<dyn FeatureExtractor>,
         matcher: Box<dyn FeatureMatcher>,
         camera: Camera,
