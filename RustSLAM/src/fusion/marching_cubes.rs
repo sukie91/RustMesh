@@ -572,10 +572,141 @@ pub fn extract_mesh_from_tsdf(volume: &TsdfVolume) -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::*;
+    use crate::fusion::tsdf_volume::{TsdfVolume, TsdfConfig};
 
     #[test]
     fn test_marching_cubes_creation() {
         let mc = MarchingCubes::new(0.01, Vec3::new(-1.0, -1.0, -1.0));
         assert_eq!(mc.voxel_size, 0.01);
+    }
+
+    #[test]
+    fn test_tri_table_completeness() {
+        // Verify all 256 entries exist
+        assert_eq!(TRI_TABLE.len(), 256);
+
+        // Verify each entry is properly terminated with -1
+        for (i, entry) in TRI_TABLE.iter().enumerate() {
+            let mut found_terminator = false;
+            for &val in entry.iter() {
+                if val == -1 {
+                    found_terminator = true;
+                    break;
+                }
+                // Verify vertex indices are in valid range [0, 11]
+                assert!(
+                    val >= 0 && val <= 11,
+                    "Case {}: Invalid edge index {} (must be 0-11)",
+                    i,
+                    val
+                );
+            }
+            assert!(
+                found_terminator,
+                "Case {}: Missing -1 terminator",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_table_completeness() {
+        // Verify all 256 entries exist
+        assert_eq!(EDGE_TABLE.len(), 256);
+
+        // Each entry should be a valid 12-bit mask (edges 0-11)
+        for (i, &entry) in EDGE_TABLE.iter().enumerate() {
+            assert!(
+                entry <= 0xFFF,
+                "Case {}: Edge mask {} exceeds 12 bits",
+                i,
+                entry
+            );
+        }
+    }
+
+    #[test]
+    fn test_cube_vertices() {
+        // Verify CUBE_VERTICES has 8 corners
+        assert_eq!(CUBE_VERTICES.len(), 8);
+
+        // Verify each corner is either 0.0 or 1.0
+        for (i, vertex) in CUBE_VERTICES.iter().enumerate() {
+            for &coord in vertex.iter() {
+                assert!(
+                    coord == 0.0 || coord == 1.0,
+                    "Corner {}: Invalid coordinate {}",
+                    i,
+                    coord
+                );
+            }
+        }
+
+        // Verify specific corners
+        assert_eq!(CUBE_VERTICES[0], [0.0, 0.0, 0.0]);
+        assert_eq!(CUBE_VERTICES[7], [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_simple_case_empty() {
+        // Case 0: All vertices outside (no triangles)
+        let entry = TRI_TABLE[0];
+        assert_eq!(entry[0], -1, "Case 0 should have no triangles");
+    }
+
+    #[test]
+    fn test_simple_case_one_corner() {
+        // Case 1: One corner inside (should generate 1 triangle)
+        let entry = TRI_TABLE[1];
+        assert_eq!(entry[0], 0);
+        assert_eq!(entry[1], 3);
+        assert_eq!(entry[2], 8);
+        assert_eq!(entry[3], -1);
+    }
+
+    #[test]
+    fn test_sphere_extraction() {
+        // Create synthetic sphere TSDF
+        let tsdf = create_sphere_tsdf(Vec3::ZERO, 1.0, 0.1);
+
+        // Extract mesh
+        let mesh = extract_mesh_from_tsdf(&tsdf);
+
+        // Verify mesh properties
+        assert!(mesh.vertices.len() > 0, "Sphere should have vertices");
+        assert!(mesh.triangles.len() > 0, "Sphere should have triangles");
+
+        // Verify vertices are roughly on sphere surface
+        let tolerance = 0.2; // Allow some tolerance due to voxelization
+        for vertex in &mesh.vertices {
+            let dist_from_center = vertex.position.length();
+            assert!(
+                (dist_from_center - 1.0).abs() < tolerance,
+                "Vertex at {:?} is {} from center (expected ~1.0)",
+                vertex.position,
+                dist_from_center
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_cases_empty_volume() {
+        // Create empty TSDF (all values > 0, outside surface)
+        let config = TsdfConfig {
+            voxel_size: 0.1,
+            sdf_trunc: 0.4,
+            min_bound: Vec3::new(-1.0, -1.0, -1.0),
+            max_bound: Vec3::new(1.0, 1.0, 1.0),
+            max_weight: 100.0,
+            integration_weight: 1.0,
+        };
+
+        let volume = TsdfVolume::new(config);
+        let mesh = extract_mesh_from_tsdf(&volume);
+
+        // Empty volume should produce no mesh
+        assert_eq!(mesh.vertices.len(), 0, "Empty volume should have no vertices");
+        assert_eq!(mesh.triangles.len(), 0, "Empty volume should have no triangles");
     }
 }

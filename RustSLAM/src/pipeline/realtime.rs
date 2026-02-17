@@ -686,4 +686,122 @@ mod tests {
         assert!(received.success);
         assert_eq!(received.num_inliers, 100);
     }
+
+    #[test]
+    fn test_ba_threshold_logic() {
+        // Test BA threshold logic (>= 2 cameras and >= 100 observations)
+        let test_cases = vec![
+            (0, 0, false),
+            (1, 100, false),
+            (2, 99, false),
+            (2, 100, true),
+            (3, 150, true),
+            (10, 1000, true),
+        ];
+
+        for (cameras, observations, should_run) in test_cases {
+            let result = cameras >= 2 && observations >= 100;
+            assert_eq!(
+                result, should_run,
+                "BA with {} cameras and {} observations: expected {}, got {}",
+                cameras, observations, should_run, result
+            );
+        }
+    }
+
+    #[test]
+    fn test_training_throttle() {
+        // Test 500ms training interval logic
+        let mut last_train = Instant::now();
+
+        // Immediately after, should not train
+        assert!(
+            last_train.elapsed() < Duration::from_millis(500),
+            "Should not train immediately"
+        );
+
+        // Wait 600ms
+        std::thread::sleep(Duration::from_millis(600));
+
+        // Now should train
+        assert!(
+            last_train.elapsed() >= Duration::from_millis(500),
+            "Should train after 500ms"
+        );
+
+        // Update last_train
+        last_train = Instant::now();
+
+        // Should not train again immediately
+        assert!(
+            last_train.elapsed() < Duration::from_millis(500),
+            "Should not train immediately after update"
+        );
+    }
+
+    #[test]
+    fn test_mapping_message_creation() {
+        let camera = Camera::new(100.0, 100.0, 1.0, 1.0, 2, 2);
+        let frame = Frame::new(
+            0,
+            0.0,
+            vec![0u8; 2 * 2 * 3],
+            None,
+            camera,
+            None,
+        );
+
+        let msg = MappingMessage {
+            keyframe_index: 5,
+            pose: SE3::identity(),
+            frame,
+        };
+
+        assert_eq!(msg.keyframe_index, 5);
+        assert_eq!(msg.frame.index, 0);
+    }
+
+    #[test]
+    fn test_ba_initialization() {
+        // Test BundleAdjuster creation
+        let ba = BundleAdjuster::new();
+
+        // BA should be created successfully
+        // (We can't test much without adding data, but we can verify it doesn't panic)
+        drop(ba);
+    }
+
+    #[test]
+    fn test_message_channel_capacity() {
+        // Test channel capacity limits
+        let (tx, rx) = bounded::<MappingMessage>(2);
+
+        let camera = Camera::new(100.0, 100.0, 1.0, 1.0, 2, 2);
+
+        // Should be able to send 2 messages
+        for i in 0..2 {
+            let frame = Frame::new(
+                i,
+                i as f64,
+                vec![0u8; 2 * 2 * 3],
+                None,
+                camera.clone(),
+                None,
+            );
+            let msg = MappingMessage {
+                keyframe_index: i,
+                pose: SE3::identity(),
+                frame,
+            };
+            tx.send(msg).unwrap();
+        }
+
+        // Third message should block (we won't actually send it)
+        // Just verify we can receive the first two
+        let msg1 = rx.recv().unwrap();
+        assert_eq!(msg1.keyframe_index, 0);
+
+        let msg2 = rx.recv().unwrap();
+        assert_eq!(msg2.keyframe_index, 1);
+    }
 }

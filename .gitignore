@@ -25,3 +25,6 @@ test_data/large/
 
 # OpenMesh source (external dependency)
 Mirror/
+
+.claude
+.gemini
