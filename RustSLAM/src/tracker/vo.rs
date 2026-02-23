@@ -272,8 +272,17 @@ impl VisualOdometry {
                     }
                 }
 
-                self.prev_3d_points = best_points;
-                
+                // Map triangulated points to current keypoint indices
+                // (process_frame stores current keypoints as prev_keypoints)
+                let mut kp_3d_points = vec![None; keypoints.len()];
+                for (i, m) in matches.iter().enumerate() {
+                    let query_idx = m.query_idx as usize;
+                    if query_idx < keypoints.len() && i < best_points.len() {
+                        kp_3d_points[query_idx] = best_points[i];
+                    }
+                }
+                self.prev_3d_points = kp_3d_points;
+
                 self.state = VOState::TrackingOk;
                 
                 return VOResult {
@@ -320,8 +329,53 @@ impl VisualOdometry {
         // Solve PnP with RANSAC
         if let Some((pose, inliers)) = self.pnp_solver.solve(&pnp_problem) {
             let inlier_count = inliers.iter().filter(|&&x| x).count();
-            
+
             if inlier_count >= self.min_inliers {
+                // Update prev_3d_points: propagate existing + triangulate new
+                let prev_pose = self.prev_frame_pose.unwrap_or(SE3::identity());
+                let mut new_3d_points = vec![None; keypoints.len()];
+
+                // Collect matches needing triangulation
+                let mut tri_prev_pts = Vec::new();
+                let mut tri_curr_pts = Vec::new();
+                let mut tri_query_indices = Vec::new();
+
+                for m in &matches {
+                    let query_idx = m.query_idx as usize;
+                    let train_idx = m.train_idx as usize;
+                    if query_idx >= keypoints.len() { continue; }
+
+                    // Propagate existing 3D point through match
+                    if train_idx < self.prev_3d_points.len() {
+                        if let Some(pt3d) = self.prev_3d_points[train_idx] {
+                            new_3d_points[query_idx] = Some(pt3d);
+                            continue;
+                        }
+                    }
+                    // No existing 3D point — queue for triangulation
+                    if train_idx < self.prev_keypoints.len() {
+                        tri_prev_pts.push([self.prev_keypoints[train_idx].x(),
+                                           self.prev_keypoints[train_idx].y()]);
+                        tri_curr_pts.push([keypoints[query_idx].x(),
+                                           keypoints[query_idx].y()]);
+                        tri_query_indices.push(query_idx);
+                    }
+                }
+
+                // Triangulate new points from two-view geometry
+                if !tri_prev_pts.is_empty() {
+                    let triangulated = self.triangulator.triangulate(
+                        &prev_pose, &pose, &tri_prev_pts, &tri_curr_pts,
+                    );
+                    for (i, pt) in triangulated.into_iter().enumerate() {
+                        if let Some(p) = pt {
+                            new_3d_points[tri_query_indices[i]] = Some(p);
+                        }
+                    }
+                }
+
+                self.prev_3d_points = new_3d_points;
+
                 return VOResult {
                     pose,
                     num_matches: matches.len(),
