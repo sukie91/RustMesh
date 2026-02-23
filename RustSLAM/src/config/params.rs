@@ -2,9 +2,30 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Collect validation errors into a list of human-readable messages.
+pub type ValidationErrors = Vec<String>;
+
+/// Feature extractor type for tracking
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FeatureType {
+    Orb,
+    Harris,
+    Fast,
+}
+
+impl Default for FeatureType {
+    fn default() -> Self {
+        Self::Orb
+    }
+}
+
 /// Tracker/VO parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerParams {
+    /// Feature extractor type
+    #[serde(default)]
+    pub feature_type: FeatureType,
     /// Maximum number of features to detect
     pub max_features: usize,
     /// Minimum number of features to maintain
@@ -30,6 +51,7 @@ pub struct TrackerParams {
 impl Default for TrackerParams {
     fn default() -> Self {
         Self {
+            feature_type: FeatureType::Orb,
             max_features: 2000,
             min_features: 500,
             pyramid_levels: 8,
@@ -37,10 +59,50 @@ impl Default for TrackerParams {
             scale_factor: 1.2,
             fast_threshold: 20,
             match_ratio: 0.75,
-            min_matches: 20,
+            min_matches: 50,
             min_inliers: 10,
             pnp_max_iterations: 20,
         }
+    }
+}
+
+impl TrackerParams {
+    pub fn validate(&self) -> ValidationErrors {
+        let mut errs = Vec::new();
+        if self.max_features == 0 {
+            errs.push("tracker.max_features must be > 0".into());
+        }
+        if self.min_features == 0 {
+            errs.push("tracker.min_features must be > 0".into());
+        }
+        if self.max_features > 0 && self.min_features > 0 && self.max_features <= self.min_features {
+            errs.push(format!(
+                "tracker.max_features ({}) must be > min_features ({})",
+                self.max_features, self.min_features
+            ));
+        }
+        if self.pyramid_levels == 0 {
+            errs.push("tracker.pyramid_levels must be > 0".into());
+        }
+        if self.patch_size == 0 {
+            errs.push("tracker.patch_size must be > 0".into());
+        }
+        if self.scale_factor <= 1.0 {
+            errs.push(format!("tracker.scale_factor ({}) must be > 1.0", self.scale_factor));
+        }
+        if self.match_ratio <= 0.0 || self.match_ratio > 1.0 {
+            errs.push(format!("tracker.match_ratio ({}) must be in (0, 1]", self.match_ratio));
+        }
+        if self.min_matches == 0 {
+            errs.push("tracker.min_matches must be > 0".into());
+        }
+        if self.min_inliers == 0 {
+            errs.push("tracker.min_inliers must be > 0".into());
+        }
+        if self.pnp_max_iterations == 0 {
+            errs.push("tracker.pnp_max_iterations must be > 0".into());
+        }
+        errs
     }
 }
 
@@ -86,6 +148,40 @@ impl Default for MapperParams {
     }
 }
 
+impl MapperParams {
+    pub fn validate(&self) -> ValidationErrors {
+        let mut errs = Vec::new();
+        if self.max_keyframes == 0 {
+            errs.push("mapper.max_keyframes must be > 0".into());
+        }
+        if self.max_keyframes > 0 && self.min_keyframes > 0 && self.max_keyframes <= self.min_keyframes {
+            errs.push(format!(
+                "mapper.max_keyframes ({}) must be > min_keyframes ({})",
+                self.max_keyframes, self.min_keyframes
+            ));
+        }
+        if self.keyframe_interval == 0 {
+            errs.push("mapper.keyframe_interval must be > 0".into());
+        }
+        if self.max_point_distance <= self.min_point_distance {
+            errs.push(format!(
+                "mapper.max_point_distance ({}) must be > min_point_distance ({})",
+                self.max_point_distance, self.min_point_distance
+            ));
+        }
+        if self.min_point_distance < 0.0 {
+            errs.push("mapper.min_point_distance must be >= 0".into());
+        }
+        if self.max_reproj_error <= 0.0 {
+            errs.push("mapper.max_reproj_error must be > 0".into());
+        }
+        if self.min_triangulation_angle <= 0.0 {
+            errs.push("mapper.min_triangulation_angle must be > 0".into());
+        }
+        errs
+    }
+}
+
 /// Optimizer parameters (Bundle Adjustment)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizerParams {
@@ -119,6 +215,34 @@ impl Default for OptimizerParams {
             num_threads: 4,
             convergence_threshold: 1e-6,
         }
+    }
+}
+
+impl OptimizerParams {
+    pub fn validate(&self) -> ValidationErrors {
+        let mut errs = Vec::new();
+        if self.local_ba_iterations == 0 {
+            errs.push("optimizer.local_ba_iterations must be > 0".into());
+        }
+        if self.full_ba_iterations == 0 {
+            errs.push("optimizer.full_ba_iterations must be > 0".into());
+        }
+        if self.pose_iterations == 0 {
+            errs.push("optimizer.pose_iterations must be > 0".into());
+        }
+        if self.max_reproj_error <= 0.0 {
+            errs.push("optimizer.max_reproj_error must be > 0".into());
+        }
+        if self.robust_kernel_threshold <= 0.0 {
+            errs.push("optimizer.robust_kernel_threshold must be > 0".into());
+        }
+        if self.use_parallel && self.num_threads == 0 {
+            errs.push("optimizer.num_threads must be > 0 when use_parallel is true".into());
+        }
+        if self.convergence_threshold <= 0.0 {
+            errs.push("optimizer.convergence_threshold must be > 0".into());
+        }
+        errs
     }
 }
 
@@ -164,6 +288,28 @@ impl Default for LoopClosingParams {
     }
 }
 
+impl LoopClosingParams {
+    pub fn validate(&self) -> ValidationErrors {
+        let mut errs = Vec::new();
+        if self.min_loop_score <= 0.0 {
+            errs.push("loop_closing.min_loop_score must be > 0".into());
+        }
+        if self.min_matches == 0 {
+            errs.push("loop_closing.min_matches must be > 0".into());
+        }
+        if self.min_inliers == 0 {
+            errs.push("loop_closing.min_inliers must be > 0".into());
+        }
+        if self.ransac_iterations == 0 {
+            errs.push("loop_closing.ransac_iterations must be > 0".into());
+        }
+        if self.inlier_threshold <= 0.0 {
+            errs.push("loop_closing.inlier_threshold must be > 0".into());
+        }
+        errs
+    }
+}
+
 /// Dataset parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetParams {
@@ -197,6 +343,22 @@ impl Default for DatasetParams {
             depth_scale: 1000.0,
             depth_trunc: 10.0,
         }
+    }
+}
+
+impl DatasetParams {
+    pub fn validate(&self) -> ValidationErrors {
+        let mut errs = Vec::new();
+        if self.stride == 0 {
+            errs.push("dataset.stride must be > 0".into());
+        }
+        if self.depth_scale <= 0.0 {
+            errs.push("dataset.depth_scale must be > 0".into());
+        }
+        if self.depth_trunc <= 0.0 {
+            errs.push("dataset.depth_trunc must be > 0".into());
+        }
+        errs
     }
 }
 
@@ -251,6 +413,25 @@ impl Default for ViewerParams {
     }
 }
 
+impl ViewerParams {
+    pub fn validate(&self) -> ValidationErrors {
+        let mut errs = Vec::new();
+        if self.width == 0 {
+            errs.push("viewer.width must be > 0".into());
+        }
+        if self.height == 0 {
+            errs.push("viewer.height must be > 0".into());
+        }
+        if self.point_size <= 0.0 {
+            errs.push("viewer.point_size must be > 0".into());
+        }
+        if self.line_width <= 0.0 {
+            errs.push("viewer.line_width must be > 0".into());
+        }
+        errs
+    }
+}
+
 /// 3DGS (Gaussian Splatting) parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GaussianSplattingParams {
@@ -292,16 +473,56 @@ impl Default for GaussianSplattingParams {
             densify_interval: 100,
             densify_threshold: 0.0002,
             prune_interval: 100,
-            prune_opacity: 0.005,
+            prune_opacity: 0.05,
             lr_position: 0.00016,
             lr_rotation: 0.002,
             lr_scale: 0.005,
             lr_opacity: 0.05,
             lr_color: 0.0025,
             batch_size: 4096,
-            num_iterations: 30_000,
+            num_iterations: 3_000,
             use_gpu: true,
         }
+    }
+}
+
+impl GaussianSplattingParams {
+    pub fn validate(&self) -> ValidationErrors {
+        let mut errs = Vec::new();
+        if self.max_gaussians == 0 {
+            errs.push("gaussian_splatting.max_gaussians must be > 0".into());
+        }
+        if self.init_gaussians == 0 {
+            errs.push("gaussian_splatting.init_gaussians must be > 0".into());
+        }
+        if self.max_gaussians > 0 && self.init_gaussians > self.max_gaussians {
+            errs.push(format!(
+                "gaussian_splatting.init_gaussians ({}) must be <= max_gaussians ({})",
+                self.init_gaussians, self.max_gaussians
+            ));
+        }
+        if self.lr_position <= 0.0 {
+            errs.push("gaussian_splatting.lr_position must be > 0".into());
+        }
+        if self.lr_rotation <= 0.0 {
+            errs.push("gaussian_splatting.lr_rotation must be > 0".into());
+        }
+        if self.lr_scale <= 0.0 {
+            errs.push("gaussian_splatting.lr_scale must be > 0".into());
+        }
+        if self.lr_opacity <= 0.0 {
+            errs.push("gaussian_splatting.lr_opacity must be > 0".into());
+        }
+        if self.lr_color <= 0.0 {
+            errs.push("gaussian_splatting.lr_color must be > 0".into());
+        }
+        if self.batch_size == 0 {
+            errs.push("gaussian_splatting.batch_size must be > 0".into());
+        }
+        if self.num_iterations == 0 {
+            errs.push("gaussian_splatting.num_iterations must be > 0".into());
+        }
+        errs
     }
 }
 
@@ -332,6 +553,25 @@ impl Default for TsdfParams {
     }
 }
 
+impl TsdfParams {
+    pub fn validate(&self) -> ValidationErrors {
+        let mut errs = Vec::new();
+        if self.voxel_size <= 0.0 {
+            errs.push("tsdf.voxel_size must be > 0".into());
+        }
+        if self.trunc_dist <= 0.0 {
+            errs.push("tsdf.trunc_dist must be > 0".into());
+        }
+        if self.volume_size <= 0.0 {
+            errs.push("tsdf.volume_size must be > 0".into());
+        }
+        if self.max_weight == 0 {
+            errs.push("tsdf.max_weight must be > 0".into());
+        }
+        errs
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +580,7 @@ mod tests {
     fn test_tracker_params_default() {
         let params = TrackerParams::default();
         assert_eq!(params.max_features, 2000);
+        assert!(matches!(params.feature_type, FeatureType::Orb));
     }
 
     #[test]
@@ -382,5 +623,77 @@ mod tests {
     fn test_tsdf_params_default() {
         let params = TsdfParams::default();
         assert_eq!(params.voxel_size, 0.01);
+    }
+
+    #[test]
+    fn test_defaults_pass_validation() {
+        assert!(TrackerParams::default().validate().is_empty());
+        assert!(MapperParams::default().validate().is_empty());
+        assert!(OptimizerParams::default().validate().is_empty());
+        assert!(LoopClosingParams::default().validate().is_empty());
+        assert!(DatasetParams::default().validate().is_empty());
+        assert!(ViewerParams::default().validate().is_empty());
+        assert!(GaussianSplattingParams::default().validate().is_empty());
+        assert!(TsdfParams::default().validate().is_empty());
+    }
+
+    #[test]
+    fn test_tracker_validation_max_lte_min() {
+        let mut p = TrackerParams::default();
+        p.max_features = 100;
+        p.min_features = 200;
+        let errs = p.validate();
+        assert!(errs.iter().any(|e| e.contains("max_features")));
+    }
+
+    #[test]
+    fn test_tracker_validation_scale_factor() {
+        let mut p = TrackerParams::default();
+        p.scale_factor = 0.5;
+        let errs = p.validate();
+        assert!(errs.iter().any(|e| e.contains("scale_factor")));
+    }
+
+    #[test]
+    fn test_tracker_validation_match_ratio() {
+        let mut p = TrackerParams::default();
+        p.match_ratio = 1.5;
+        let errs = p.validate();
+        assert!(errs.iter().any(|e| e.contains("match_ratio")));
+    }
+
+    #[test]
+    fn test_mapper_validation_distances() {
+        let mut p = MapperParams::default();
+        p.max_point_distance = 0.05;
+        p.min_point_distance = 0.1;
+        let errs = p.validate();
+        assert!(errs.iter().any(|e| e.contains("max_point_distance")));
+    }
+
+    #[test]
+    fn test_optimizer_validation_threads() {
+        let mut p = OptimizerParams::default();
+        p.use_parallel = true;
+        p.num_threads = 0;
+        let errs = p.validate();
+        assert!(errs.iter().any(|e| e.contains("num_threads")));
+    }
+
+    #[test]
+    fn test_gaussian_splatting_init_gt_max() {
+        let mut p = GaussianSplattingParams::default();
+        p.init_gaussians = 200_000;
+        p.max_gaussians = 100_000;
+        let errs = p.validate();
+        assert!(errs.iter().any(|e| e.contains("init_gaussians")));
+    }
+
+    #[test]
+    fn test_tsdf_validation_voxel_size() {
+        let mut p = TsdfParams::default();
+        p.voxel_size = -1.0;
+        let errs = p.validate();
+        assert!(errs.iter().any(|e| e.contains("voxel_size")));
     }
 }

@@ -19,6 +19,8 @@ pub enum ConfigError {
     TomlSerializeError(#[from] toml::ser::Error),
     #[error("Unsupported config format: {0}")]
     UnsupportedFormat(String),
+    #[error("Invalid configuration:\n{0}")]
+    Validation(String),
 }
 
 /// Main SLAM configuration
@@ -88,6 +90,29 @@ impl Default for CameraConfig {
 }
 
 impl CameraConfig {
+    pub fn validate(&self) -> Vec<String> {
+        let mut errs = Vec::new();
+        if self.width == 0 {
+            errs.push("camera.width must be > 0".into());
+        }
+        if self.height == 0 {
+            errs.push("camera.height must be > 0".into());
+        }
+        if self.fx <= 0.0 {
+            errs.push("camera.fx must be > 0".into());
+        }
+        if self.fy <= 0.0 {
+            errs.push("camera.fy must be > 0".into());
+        }
+        if self.cx <= 0.0 {
+            errs.push("camera.cx must be > 0".into());
+        }
+        if self.cy <= 0.0 {
+            errs.push("camera.cy must be > 0".into());
+        }
+        errs
+    }
+
     /// Convert to core Camera struct
     pub fn to_camera(&self) -> crate::core::Camera {
         crate::core::Camera::new(self.fx, self.fy, self.cx, self.cy, self.width, self.height)
@@ -98,37 +123,47 @@ impl CameraConfig {
 pub struct ConfigLoader;
 
 impl ConfigLoader {
-    /// Load configuration from file
-    ///
-    /// # Arguments
-    /// * `path` - Path to configuration file
-    ///
-    /// # Returns
-    /// SlamConfig if successful
+    /// Load configuration from file (with validation)
     pub fn load<P: AsRef<Path>>(path: P) -> Result<SlamConfig, ConfigError> {
         let path = path.as_ref();
         let extension = path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
-        match extension.to_lowercase().as_str() {
-            "yaml" | "yml" => Self::load_yaml(path),
-            "toml" => Self::load_toml(path),
-            _ => Err(ConfigError::UnsupportedFormat(extension.to_string())),
-        }
+        let config = match extension.to_lowercase().as_str() {
+            "yaml" | "yml" => Self::load_yaml_raw(path)?,
+            "toml" => Self::load_toml_raw(path)?,
+            _ => return Err(ConfigError::UnsupportedFormat(extension.to_string())),
+        };
+        config.validate()?;
+        Ok(config)
     }
 
-    /// Load configuration from YAML file
-    pub fn load_yaml<P: AsRef<Path>>(path: P) -> Result<SlamConfig, ConfigError> {
+    /// Load from YAML without validation (internal)
+    fn load_yaml_raw<P: AsRef<Path>>(path: P) -> Result<SlamConfig, ConfigError> {
         let content = std::fs::read_to_string(path)?;
         let config: SlamConfig = serde_yaml::from_str(&content)?;
         Ok(config)
     }
 
-    /// Load configuration from TOML file
-    pub fn load_toml<P: AsRef<Path>>(path: P) -> Result<SlamConfig, ConfigError> {
+    /// Load from TOML without validation (internal)
+    fn load_toml_raw<P: AsRef<Path>>(path: P) -> Result<SlamConfig, ConfigError> {
         let content = std::fs::read_to_string(path)?;
         let config: SlamConfig = toml::from_str(&content)?;
+        Ok(config)
+    }
+
+    /// Load configuration from YAML file (with validation)
+    pub fn load_yaml<P: AsRef<Path>>(path: P) -> Result<SlamConfig, ConfigError> {
+        let config = Self::load_yaml_raw(path)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Load configuration from TOML file (with validation)
+    pub fn load_toml<P: AsRef<Path>>(path: P) -> Result<SlamConfig, ConfigError> {
+        let config = Self::load_toml_raw(path)?;
+        config.validate()?;
         Ok(config)
     }
 
@@ -148,6 +183,24 @@ impl ConfigLoader {
 }
 
 impl SlamConfig {
+    /// Validate all configuration parameters.
+    /// Returns `Ok(())` if valid, or `Err(ConfigError::Validation)` with all issues listed.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let mut errs = Vec::new();
+        errs.extend(self.camera.validate());
+        errs.extend(self.tracker.validate());
+        errs.extend(self.mapper.validate());
+        errs.extend(self.optimizer.validate());
+        errs.extend(self.loop_closing.validate());
+        errs.extend(self.dataset.validate());
+        errs.extend(self.viewer.validate());
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigError::Validation(errs.join("\n")))
+        }
+    }
+
     /// Create default configuration for TUM dataset
     pub fn tum_rgbd() -> Self {
         Self {
@@ -297,5 +350,56 @@ mod tests {
         let loaded = ConfigLoader::load_toml(temp_file.path()).unwrap();
 
         assert_eq!(loaded.camera.fx, config.camera.fx);
+    }
+
+    #[test]
+    fn test_default_config_validates() {
+        SlamConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn test_preset_configs_validate() {
+        SlamConfig::tum_rgbd().validate().unwrap();
+        SlamConfig::kitti().validate().unwrap();
+        SlamConfig::euroc().validate().unwrap();
+    }
+
+    #[test]
+    fn test_invalid_camera_rejected() {
+        let mut config = SlamConfig::default();
+        config.camera.fx = 0.0;
+        config.camera.height = 0;
+        let err = config.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("camera.fx"));
+        assert!(msg.contains("camera.height"));
+    }
+
+    #[test]
+    fn test_invalid_toml_rejected_at_load() {
+        let temp_file = NamedTempFile::new().unwrap();
+        // Write a config with invalid tracker params
+        let mut config = SlamConfig::default();
+        config.tracker.max_features = 10;
+        config.tracker.min_features = 100; // max < min
+        ConfigLoader::save_toml(&config, temp_file.path()).unwrap();
+
+        let result = ConfigLoader::load_toml(temp_file.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("max_features"));
+    }
+
+    #[test]
+    fn test_multiple_errors_collected() {
+        let mut config = SlamConfig::default();
+        config.camera.fx = -1.0;
+        config.tracker.scale_factor = 0.5;
+        config.mapper.keyframe_interval = 0;
+        let err = config.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("camera.fx"));
+        assert!(msg.contains("scale_factor"));
+        assert!(msg.contains("keyframe_interval"));
     }
 }
