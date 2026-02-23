@@ -7,6 +7,7 @@
 //! - Filters redundant keyframes
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, RwLock};
 use glam::Vec3;
 
 use crate::core::{Camera, Frame, FrameFeatures, KeyFrame, Map, MapPoint, SE3};
@@ -31,6 +32,8 @@ pub struct LocalMappingConfig {
     pub local_ba_enabled: bool,
     /// Local BA iterations
     pub local_ba_iterations: usize,
+    /// Local BA interval in keyframes
+    pub local_ba_interval: usize,
     /// Keyframe culling threshold (ratio of mapped points)
     pub culling_threshold: f32,
 }
@@ -46,6 +49,7 @@ impl Default for LocalMappingConfig {
             max_reprojection_error: 4.0,   // pixels
             local_ba_enabled: true,
             local_ba_iterations: 10,
+            local_ba_interval: 5,
             culling_threshold: 0.9,       // 90% mapped points = redundant
         }
     }
@@ -75,8 +79,8 @@ pub struct LocalMapping {
     config: LocalMappingConfig,
     /// Current state
     state: MappingState,
-    /// The map being worked on
-    map: Option<Map>,
+    /// The map being worked on (thread-safe)
+    map: Option<Arc<RwLock<Map>>>,
     /// Local keyframes (current and connected)
     local_keyframes: Vec<u64>,
     /// Local map points (observed by local keyframes)
@@ -87,6 +91,8 @@ pub struct LocalMapping {
     camera: Option<Camera>,
     /// Next map point ID
     next_point_id: u64,
+    /// Keyframes since last local BA
+    keyframes_since_ba: usize,
 }
 
 impl LocalMapping {
@@ -101,12 +107,47 @@ impl LocalMapping {
             new_keyframes: VecDeque::new(),
             camera: None,
             next_point_id: 0,
+            keyframes_since_ba: 0,
         }
     }
 
     /// Set the map reference
     pub fn set_map(&mut self, map: Map) {
+        self.map = Some(Arc::new(RwLock::new(map)));
+    }
+
+    /// Set a shared map reference (for multi-threaded access)
+    pub fn set_shared_map(&mut self, map: Arc<RwLock<Map>>) {
         self.map = Some(map);
+    }
+
+    /// Set the map and initialize local indices
+    pub fn set_map_and_init(&mut self, map: Map) {
+        self.local_keyframes = map.keyframes().map(|kf| kf.id()).collect();
+        self.local_map_points = map.points().map(|mp| mp.id).collect();
+        self.map = Some(Arc::new(RwLock::new(map)));
+        self.keyframes_since_ba = 0;
+    }
+
+    /// Set a shared map and initialize local indices
+    pub fn set_shared_map_and_init(&mut self, map: Arc<RwLock<Map>>) {
+        {
+            let m = map.read().unwrap();
+            self.local_keyframes = m.keyframes().map(|kf| kf.id()).collect();
+            self.local_map_points = m.points().map(|mp| mp.id).collect();
+        }
+        self.map = Some(map);
+        self.keyframes_since_ba = 0;
+    }
+
+    /// Access the shared map
+    pub fn shared_map(&self) -> Option<&Arc<RwLock<Map>>> {
+        self.map.as_ref()
+    }
+
+    /// Access the internal map (convenience for single-threaded use)
+    pub fn map(&self) -> Option<std::sync::RwLockReadGuard<'_, Map>> {
+        self.map.as_ref().and_then(|m| m.read().ok())
     }
 
     /// Set the camera
@@ -134,6 +175,7 @@ impl LocalMapping {
             // Add keyframe to local keyframes
             let kf_id = keyframe.id();
             self.local_keyframes.push(kf_id);
+            self.keyframes_since_ba = self.keyframes_since_ba.saturating_add(1);
             
             // Limit local keyframes
             while self.local_keyframes.len() > self.config.max_keyframes {
@@ -145,8 +187,12 @@ impl LocalMapping {
         }
         
         // Run local BA if enabled
-        if self.config.local_ba_enabled {
+        if self.config.local_ba_enabled
+            && (self.config.local_ba_interval == 0
+                || self.keyframes_since_ba >= self.config.local_ba_interval)
+        {
             self.run_local_ba();
+            self.keyframes_since_ba = 0;
         }
         
         // Cull redundant keyframes
@@ -165,7 +211,8 @@ impl LocalMapping {
         // Find neighboring keyframes to triangulate with
         // For simplicity, use previous keyframes in local_keyframes
         // Collect the neighbor keyframes first to avoid borrow issues
-        let neighbor_data: Vec<(KeyFrame, SE3)> = if let Some(ref map) = self.map {
+        let neighbor_data: Vec<(KeyFrame, SE3)> = if let Some(ref shared) = self.map {
+            let map = shared.read().unwrap();
             self.local_keyframes.iter()
                 .filter(|&&kf_id| kf_id != new_keyframe.id())
                 .filter_map(|&kf_id| {
@@ -269,7 +316,8 @@ impl LocalMapping {
         let map_point = MapPoint::new(point_id, Vec3::from(position), ref_kf);
         
         // Add to map if available
-        if let Some(ref mut map) = self.map {
+        if let Some(ref shared) = self.map {
+            let mut map = shared.write().unwrap();
             map.add_point(map_point);
         }
         
@@ -302,8 +350,9 @@ impl LocalMapping {
         
         // Add cameras
         let mut camera_indices: HashMap<u64, usize> = HashMap::new();
-        
-        if let Some(ref map) = self.map {
+
+        if let Some(ref shared) = self.map {
+            let map = shared.read().unwrap();
             for &kf_id in &local_kfs {
                 if let Some(kf) = map.get_keyframe(kf_id) {
                     // Get camera intrinsics (use default if not available)
@@ -322,8 +371,9 @@ impl LocalMapping {
         
         // Add landmarks
         let mut landmark_indices: HashMap<u64, usize> = HashMap::new();
-        
-        if let Some(ref map) = self.map {
+
+        if let Some(ref shared) = self.map {
+            let map = shared.read().unwrap();
             for &mp_id in &local_mps {
                 if let Some(mp) = map.get_point(mp_id) {
                     let landmark = BALandmark::new(
@@ -338,7 +388,8 @@ impl LocalMapping {
         }
         
         // Add observations
-        if let Some(ref map) = self.map {
+        if let Some(ref shared) = self.map {
+            let map = shared.read().unwrap();
             for &kf_id in &local_kfs {
                 if let Some(kf) = map.get_keyframe(kf_id) {
                     let Some(&cam_idx) = camera_indices.get(&kf_id) else {
@@ -370,7 +421,8 @@ impl LocalMapping {
         match result {
             Ok((cameras, landmarks)) => {
                 // Update map points with optimized positions
-                if let Some(ref mut map) = self.map {
+                if let Some(ref shared) = self.map {
+                    let mut map = shared.write().unwrap();
                     for (mp_id, lm_idx) in &landmark_indices {
                         if *lm_idx < landmarks.len() {
                             let lm = &landmarks[*lm_idx];
@@ -415,7 +467,8 @@ impl LocalMapping {
         for i in check_range {
             let kf_id = self.local_keyframes[i];
             
-            if let Some(ref map) = self.map {
+            if let Some(ref shared) = self.map {
+                let map = shared.read().unwrap();
                 if let Some(kf) = map.get_keyframe(kf_id) {
                     // Count mapped points
                     let mapped_count = kf.features.map_points

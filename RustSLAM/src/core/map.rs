@@ -2,6 +2,7 @@
 
 use crate::core::{KeyFrame, MapPoint};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The map containing all map points and keyframes
 #[derive(Debug, Default)]
@@ -10,10 +11,10 @@ pub struct Map {
     points: HashMap<u64, MapPoint>,
     /// All keyframes indexed by ID
     keyframes: HashMap<u64, KeyFrame>,
-    /// Next available map point ID
-    next_point_id: u64,
-    /// Next available keyframe ID
-    next_keyframe_id: u64,
+    /// Next available map point ID (atomic for thread safety)
+    next_point_id: AtomicU64,
+    /// Next available keyframe ID (atomic for thread safety)
+    next_keyframe_id: AtomicU64,
 }
 
 impl Map {
@@ -24,19 +25,35 @@ impl Map {
 
     /// Add a map point
     pub fn add_point(&mut self, point: MapPoint) -> u64 {
-        let id = self.next_point_id;
-        self.next_point_id += 1;
+        let id = self.next_point_id.fetch_add(1, Ordering::Relaxed);
         self.points.insert(id, point);
         id
     }
 
+    /// Insert a map point with a specific ID
+    pub fn insert_point_with_id(&mut self, id: u64, mut point: MapPoint) {
+        point.id = id;
+        self.points.insert(id, point);
+    }
+
     /// Add a keyframe
     pub fn add_keyframe(&mut self, mut keyframe: KeyFrame) -> u64 {
-        let id = self.next_keyframe_id;
-        self.next_keyframe_id += 1;
+        let id = self.next_keyframe_id.fetch_add(1, Ordering::Relaxed);
         keyframe.frame.id = id;
         self.keyframes.insert(id, keyframe);
         id
+    }
+
+    /// Insert a keyframe with a specific ID
+    pub fn insert_keyframe_with_id(&mut self, id: u64, mut keyframe: KeyFrame) {
+        keyframe.frame.id = id;
+        self.keyframes.insert(id, keyframe);
+    }
+
+    /// Set the next IDs for map points and keyframes
+    pub fn set_next_ids(&mut self, next_point_id: u64, next_keyframe_id: u64) {
+        self.next_point_id.store(next_point_id, Ordering::Relaxed);
+        self.next_keyframe_id.store(next_keyframe_id, Ordering::Relaxed);
     }
 
     /// Get a map point by ID
@@ -52,6 +69,11 @@ impl Map {
     /// Get a keyframe by ID
     pub fn get_keyframe(&self, id: u64) -> Option<&KeyFrame> {
         self.keyframes.get(&id)
+    }
+
+    /// Get a keyframe mutably by ID
+    pub fn get_keyframe_mut(&mut self, id: u64) -> Option<&mut KeyFrame> {
+        self.keyframes.get_mut(&id)
     }
 
     /// Get all map points

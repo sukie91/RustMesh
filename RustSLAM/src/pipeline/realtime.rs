@@ -6,7 +6,7 @@
 //! - Optimization Thread: Low priority, runs BA and 3DGS training at 1-2 FPS
 //!
 //! Architecture:
-//! ```
+//! ```text
 //! ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 //! │ Tracking     │ ──> │ Mapping      │ ──> │ Optimization │
 //! │ (30-60 FPS) │     │ (5-10 FPS)   │     │ (1-2 FPS)   │
@@ -16,16 +16,26 @@
 
 use crossbeam_channel::{bounded, Sender, Receiver};
 use std::sync::{
-    Arc,
+    Arc, RwLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant};
+use std::path::PathBuf;
 
-use crate::core::{Camera, SE3};
-use crate::fusion::{CompleteTrainer, DiffCamera, GaussianMapper, TrainableGaussians};
+use crate::core::{Camera, Frame as CoreFrame, FrameFeatures as CoreFrameFeatures, KeyFrame, Map, MapPoint, SE3};
+use crate::fusion::{
+    CompleteTrainer,
+    DiffCamera,
+    GaussianInitConfig,
+    GaussianMapper,
+    TrainableGaussians,
+    initialize_trainable_gaussians_from_map,
+};
 use crate::io::{Dataset, Frame};
+use crate::mapping::local_mapping::{LocalMapping, LocalMappingConfig};
 use crate::optimizer::ba::{BACamera, BAObservation, BALandmark, BundleAdjuster};
+use crate::pipeline::checkpoint::{CheckpointConfig, CheckpointManager, load_latest_checkpoint};
 use candle_core::Device;
 #[cfg(feature = "opencv")]
 use std::path::Path;
@@ -41,6 +51,8 @@ pub struct TrackingMessage {
     pub num_inliers: usize,
     /// Whether tracking is successful
     pub success: bool,
+    /// Extracted features (for keyframes)
+    pub features: Option<CoreFrameFeatures>,
 }
 
 /// Message sent from Mapping thread to Optimization thread
@@ -52,6 +64,8 @@ pub struct MappingMessage {
     pub pose: SE3,
     /// Keyframe data
     pub frame: Frame,
+    /// Optional map points snapshot for Gaussian initialization
+    pub map_points: Option<Vec<MapPoint>>,
 }
 
 /// Pipeline configuration
@@ -65,6 +79,10 @@ pub struct PipelineConfig {
     pub keyframe_interval: usize,
     /// Whether to enable optimization thread
     pub enable_optimization: bool,
+    /// Optional checkpoint directory
+    pub checkpoint_dir: Option<PathBuf>,
+    /// Checkpoint interval (frames)
+    pub checkpoint_interval: usize,
 }
 
 impl Default for PipelineConfig {
@@ -74,6 +92,8 @@ impl Default for PipelineConfig {
             map_opt_channel_size: 8,
             keyframe_interval: 5,
             enable_optimization: true,
+            checkpoint_dir: None,
+            checkpoint_interval: 50,
         }
     }
 }
@@ -139,6 +159,27 @@ impl RealtimePipeline {
         let keyframe_interval = self.config.keyframe_interval;
         let enable_optimization = self.config.enable_optimization;
         let camera = dataset.camera();
+        let checkpoint_dir = self.config.checkpoint_dir.clone();
+        let checkpoint_interval = self.config.checkpoint_interval;
+
+        let mut resume_frame: Option<usize> = None;
+        let mut resume_map: Option<Arc<RwLock<Map>>> = None;
+        if let Some(dir) = &checkpoint_dir {
+            match load_latest_checkpoint(dir) {
+                Ok(Some(checkpoint)) => {
+                    resume_frame = Some(checkpoint.frame_index);
+                    resume_map = Some(Arc::new(RwLock::new(checkpoint.to_map())));
+                    log::info!(
+                        "Resuming from checkpoint at frame {}",
+                        checkpoint.frame_index
+                    );
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    log::warn!("Failed to load checkpoint: {}", err);
+                }
+            }
+        }
 
         // Clone stop flag for each thread
         let stop_tracking = Arc::clone(&self.stop_flag);
@@ -147,12 +188,21 @@ impl RealtimePipeline {
 
         // Spawn tracking thread
         let tracking_thread = thread::spawn(move || {
-            tracking_thread_main(dataset, track_tx, stop_tracking);
+            tracking_thread_main(dataset, track_tx, stop_tracking, resume_frame);
         });
 
         // Spawn mapping thread
         let mapping_thread = thread::spawn(move || {
-            mapping_thread_main(camera.clone(), track_rx, map_tx, stop_mapping, keyframe_interval);
+            mapping_thread_main(
+                camera.clone(),
+                track_rx,
+                map_tx,
+                stop_mapping,
+                keyframe_interval,
+                checkpoint_dir,
+                checkpoint_interval,
+                resume_map,
+            );
         });
 
         // Spawn optimization thread (optional)
@@ -217,9 +267,11 @@ fn tracking_thread_main<D: Dataset>(
     mut dataset: D,
     track_tx: Sender<TrackingMessage>,
     stop_flag: Arc<AtomicBool>,
+    resume_frame: Option<usize>,
 ) {
     let camera = dataset.camera();
     let mut vo = crate::tracker::VisualOdometry::new(camera);
+    let mut skip_until = resume_frame.unwrap_or(0);
 
     for frame_result in dataset.frames() {
         if stop_flag.load(Ordering::Relaxed) {
@@ -231,14 +283,20 @@ fn tracking_thread_main<D: Dataset>(
             Err(_) => continue,
         };
 
+        if frame.index < skip_until {
+            continue;
+        }
+
         let gray = rgb_to_grayscale(&frame.color, frame.width as usize, frame.height as usize);
         let vo_result = vo.process_frame(&gray, frame.width, frame.height);
+        let features = if vo_result.success { vo.last_features() } else { None };
 
         let msg = TrackingMessage {
             frame,
             pose: vo_result.pose,
             num_inliers: vo_result.num_inliers,
             success: vo_result.success,
+            features,
         };
 
         // Best-effort send to keep tracking thread real-time
@@ -253,11 +311,28 @@ fn mapping_thread_main(
     map_tx: Sender<MappingMessage>,
     stop_flag: Arc<AtomicBool>,
     keyframe_interval: usize,
+    checkpoint_dir: Option<PathBuf>,
+    checkpoint_interval: usize,
+    resume_map: Option<Arc<RwLock<Map>>>,
 ) {
     let mut mapper = GaussianMapper::new(
         camera.width as usize,
         camera.height as usize,
     );
+    let mut local_mapping = LocalMapping::new(LocalMappingConfig::default());
+    local_mapping.set_camera(camera.clone());
+
+    if let Some(shared_map) = resume_map {
+        local_mapping.set_shared_map_and_init(shared_map);
+    } else {
+        local_mapping.set_map(Map::new());
+    }
+
+    let mut checkpoint_manager = checkpoint_dir
+        .map(|dir| CheckpointConfig { dir, interval: checkpoint_interval })
+        .and_then(|config| CheckpointManager::new(config).ok());
+
+    let mut sent_gaussian_init = false;
 
     loop {
         // Check for stop signal
@@ -269,6 +344,21 @@ fn mapping_thread_main(
         match track_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(msg) => {
                 if msg.success && msg.frame.index % keyframe_interval == 0 {
+                    if let Some(features) = msg.features.clone() {
+                        let mut core_frame = CoreFrame::new(
+                            msg.frame.index as u64,
+                            msg.frame.timestamp,
+                            msg.frame.width,
+                            msg.frame.height,
+                        );
+                        core_frame.set_pose(msg.pose);
+                        core_frame.mark_as_keyframe();
+
+                        let keyframe = KeyFrame::new(core_frame, features);
+                        local_mapping.insert_keyframe(keyframe);
+                    }
+
+                    let frame_index = msg.frame.index;
                     let frame = msg.frame;
                     if let Some(depth) = &frame.depth {
                         let color: Vec<[u8; 3]> = frame.color
@@ -293,10 +383,38 @@ fn mapping_thread_main(
                     }
 
                     let _ = map_tx.send(MappingMessage {
-                        keyframe_index: frame.index,
+                        keyframe_index: frame_index,
                         pose: msg.pose,
                         frame,
+                        map_points: if !sent_gaussian_init {
+                            if let Some(map) = local_mapping.map() {
+                                let points: Vec<MapPoint> = map.valid_points().cloned().collect();
+                                if !points.is_empty() {
+                                    sent_gaussian_init = true;
+                                    Some(points)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        },
                     });
+
+                    if let (Some(manager), Some(map)) = (checkpoint_manager.as_mut(), local_mapping.map()) {
+                        match manager.maybe_save(frame_index, &*map) {
+                            Ok(path) => {
+                                if !path.as_os_str().is_empty() {
+                                    log::info!("Checkpoint saved: {}", path.display());
+                                }
+                            }
+                            Err(err) => {
+                                log::warn!("Failed to save checkpoint: {}", err);
+                            }
+                        }
+                    }
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
@@ -317,6 +435,7 @@ fn optimization_thread_main(
     let mut trainer: Option<CompleteTrainer> = None;
     let mut trainer_dims: Option<(usize, usize)> = None;
     let mut last_train = Instant::now();
+    let mut gaussians: Option<TrainableGaussians> = None;
 
     let mut ba = BundleAdjuster::new();
     let mut ba_cameras = 0usize;
@@ -372,7 +491,24 @@ fn optimization_thread_main(
 
                     if let Some(trainer) = trainer.as_mut() {
                         let device = trainer.device().clone();
-                        if let Some((mut gaussians, camera, target_color, target_depth)) =
+                        if gaussians.is_none() {
+                            if let Some(points) = msg.map_points.as_ref() {
+                                gaussians = initialize_gaussians_from_points(points, &device);
+                            }
+                        }
+
+                        if let Some(gaussians) = gaussians.as_mut() {
+                            if let Some((camera, target_color, target_depth)) =
+                                build_training_targets(&frame, &device)
+                            {
+                                let _ = trainer.training_step(
+                                    gaussians,
+                                    &camera,
+                                    &target_color,
+                                    &target_depth,
+                                );
+                            }
+                        } else if let Some((mut gaussians, camera, target_color, target_depth)) =
                             build_training_batch(&frame, &device, 4, 5000)
                         {
                             let _ = trainer.training_step(
@@ -395,6 +531,65 @@ fn optimization_thread_main(
             }
         }
     }
+}
+
+fn initialize_gaussians_from_points(
+    points: &[MapPoint],
+    device: &Device,
+) -> Option<TrainableGaussians> {
+    if points.is_empty() {
+        return None;
+    }
+
+    let mut map = Map::new();
+    for point in points {
+        map.insert_point_with_id(point.id, point.clone());
+    }
+
+    let config = GaussianInitConfig {
+        opacity: 0.5,
+        ..GaussianInitConfig::default()
+    };
+
+    initialize_trainable_gaussians_from_map(&map, &config, device).ok()
+}
+
+fn build_training_targets(
+    frame: &Frame,
+    device: &Device,
+) -> Option<(DiffCamera, Vec<f32>, Vec<f32>)> {
+    let depth = frame.depth.as_ref()?;
+    let width = frame.width as usize;
+    let height = frame.height as usize;
+    if depth.len() != width * height {
+        return None;
+    }
+
+    let fx = frame.camera.focal.x;
+    let fy = frame.camera.focal.y;
+    let cx = frame.camera.principal.x;
+    let cy = frame.camera.principal.y;
+
+    let rotation = [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let translation = [0.0, 0.0, 0.0];
+    let camera = DiffCamera::new(
+        fx, fy, cx, cy,
+        width, height,
+        &rotation,
+        &translation,
+        device,
+    ).ok()?;
+
+    let target_color: Vec<f32> = frame.color
+        .iter()
+        .map(|v| *v as f32 / 255.0)
+        .collect();
+
+    Some((camera, target_color, depth.clone()))
 }
 
 fn build_training_batch(
@@ -468,26 +663,9 @@ fn build_training_batch(
         device,
     ).ok()?;
 
-    let rotation = [
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 1.0],
-    ];
-    let translation = [0.0, 0.0, 0.0];
-    let camera = DiffCamera::new(
-        fx, fy, cx, cy,
-        width, height,
-        &rotation,
-        &translation,
-        device,
-    ).ok()?;
+    let (camera, target_color, target_depth) = build_training_targets(frame, device)?;
 
-    let target_color: Vec<f32> = frame.color
-        .iter()
-        .map(|v| *v as f32 / 255.0)
-        .collect();
-
-    Some((gaussians, camera, target_color, depth.clone()))
+    Some((gaussians, camera, target_color, target_depth))
 }
 
 fn add_ba_observations(
@@ -607,6 +785,18 @@ impl RealtimePipelineBuilder {
         self
     }
 
+    /// Set checkpoint directory
+    pub fn checkpoint_dir<P: Into<PathBuf>>(mut self, dir: P) -> Self {
+        self.config.checkpoint_dir = Some(dir.into());
+        self
+    }
+
+    /// Set checkpoint interval (frames)
+    pub fn checkpoint_interval(mut self, interval: usize) -> Self {
+        self.config.checkpoint_interval = interval;
+        self
+    }
+
     /// Build the pipeline
     pub fn build(self) -> RealtimePipeline {
         RealtimePipeline::with_config(self.config)
@@ -630,6 +820,8 @@ mod tests {
         assert_eq!(config.map_opt_channel_size, 8);
         assert_eq!(config.keyframe_interval, 5);
         assert!(config.enable_optimization);
+        assert!(config.checkpoint_dir.is_none());
+        assert_eq!(config.checkpoint_interval, 50);
     }
 
     #[test]
@@ -678,6 +870,7 @@ mod tests {
             pose: SE3::identity(),
             num_inliers: 100,
             success: true,
+            features: None,
         };
 
         tx.send(msg).unwrap();
@@ -755,6 +948,7 @@ mod tests {
             keyframe_index: 5,
             pose: SE3::identity(),
             frame,
+            map_points: None,
         };
 
         assert_eq!(msg.keyframe_index, 5);
@@ -792,6 +986,7 @@ mod tests {
                 keyframe_index: i,
                 pose: SE3::identity(),
                 frame,
+                map_points: None,
             };
             tx.send(msg).unwrap();
         }
