@@ -2,6 +2,9 @@
 
 use thiserror::Error;
 
+/// ORB descriptor size in bytes.
+pub const ORB_DESCRIPTOR_SIZE: usize = 32;
+
 #[derive(Error, Debug)]
 pub enum FeatureError {
     #[error("OpenCV error: {0}")]
