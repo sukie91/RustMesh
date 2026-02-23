@@ -359,7 +359,8 @@ impl LocalMapping {
                     let (fx, fy, cx, cy) = if let Some(ref cam) = self.camera {
                         (cam.focal.x as f64, cam.focal.y as f64, cam.principal.x as f64, cam.principal.y as f64)
                     } else {
-                        (500.0, 500.0, 320.0, 240.0)
+                        let defaults = crate::config::CameraConfig::default();
+                        (defaults.fx as f64, defaults.fy as f64, defaults.cx as f64, defaults.cy as f64)
                     };
                     
                     let ba_cam = BACamera::new(fx, fy, cx, cy);

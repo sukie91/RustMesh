@@ -202,8 +202,8 @@ impl Relocalizer {
 
 impl Default for Relocalizer {
     fn default() -> Self {
-        // Default camera parameters
-        Self::new(500.0, 500.0, 320.0, 240.0)
+        let cam = crate::config::CameraConfig::default();
+        Self::new(cam.fx, cam.fy, cam.cx, cam.cy)
     }
 }
 

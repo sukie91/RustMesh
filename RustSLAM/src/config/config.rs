@@ -87,6 +87,13 @@ impl Default for CameraConfig {
     }
 }
 
+impl CameraConfig {
+    /// Convert to core Camera struct
+    pub fn to_camera(&self) -> crate::core::Camera {
+        crate::core::Camera::new(self.fx, self.fy, self.cx, self.cy, self.width, self.height)
+    }
+}
+
 /// Configuration loader supporting YAML and TOML
 pub struct ConfigLoader;
 

@@ -135,10 +135,16 @@ pub struct SparseDenseSlam {
     renderer: TiledRenderer,
     /// Whether tracking is lost
     tracking_lost: bool,
+    /// Camera intrinsics
+    fx: f32,
+    fy: f32,
+    cx: f32,
+    cy: f32,
 }
 
 impl SparseDenseSlam {
     pub fn new(width: usize, height: usize) -> Self {
+        let cam = crate::config::CameraConfig::default();
         Self {
             config: SlamConfig::default(),
             frame_id: 0,
@@ -147,10 +153,15 @@ impl SparseDenseSlam {
             gaussians: Vec::new(),
             renderer: TiledRenderer::new(width, height),
             tracking_lost: false,
+            fx: cam.fx,
+            fy: cam.fy,
+            cx: cam.cx,
+            cy: cam.cy,
         }
     }
 
     pub fn with_config(config: SlamConfig, width: usize, height: usize) -> Self {
+        let cam = crate::config::CameraConfig::default();
         Self {
             config,
             frame_id: 0,
@@ -159,6 +170,10 @@ impl SparseDenseSlam {
             gaussians: Vec::new(),
             renderer: TiledRenderer::new(width, height),
             tracking_lost: false,
+            fx: cam.fx,
+            fy: cam.fy,
+            cx: cam.cx,
+            cy: cam.cy,
         }
     }
 
@@ -278,14 +293,9 @@ impl SparseDenseSlam {
                     continue;
                 }
 
-                // Backproject to camera space
-                let fx = 500.0;
-                let fy = 500.0;
-                let cx = 320.0;
-                let cy = 240.0;
-
-                let x_cam = (x as f32 - cx) * z / fx;
-                let y_cam = (y as f32 - cy) * z / fy;
+                // Backproject to camera space using configured intrinsics
+                let x_cam = (x as f32 - self.cx) * z / self.fx;
+                let y_cam = (y as f32 - self.cy) * z / self.fy;
 
                 // Transform to world space
                 let wx = rot[0][0] * x_cam + rot[0][1] * y_cam + rot[0][2] * z + trans[0];

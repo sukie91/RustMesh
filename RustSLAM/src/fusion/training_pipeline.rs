@@ -9,6 +9,8 @@
 //! - Progressive training
 
 use candle_core::{Tensor, Device, DType, Var};
+use std::path::{Path, PathBuf};
+use crate::fusion::scene_io::{save_scene_ply, SceneIoError, SceneMetadata};
 use crate::fusion::tiled_renderer::{Gaussian, TiledRenderer, RenderBuffer};
 
 /// Complete training configuration
@@ -41,6 +43,10 @@ pub struct TrainingConfig {
     pub iterations: usize,
     pub batch_size: usize,
     pub position_lr_decay: f32,
+    /// Maximum number of Gaussians to maintain
+    pub max_gaussians: usize,
+    /// Prune Gaussians with excessive scale
+    pub prune_scale_threshold: f32,
     
     // Rendering
     pub sh_degree: usize,
@@ -66,16 +72,18 @@ impl Default for TrainingConfig {
             // Pruning
             prune_enabled: true,
             prune_interval: 100,
-            prune_opacity_threshold: 0.005,
+            prune_opacity_threshold: 0.05,
             
             // Opacity reset
             opacity_reset_interval: 3000,
             opacity_reset_threshold: 0.0001,
             
             // Training
-            iterations: 30_000,
+            iterations: 3_000,
             batch_size: 1,
             position_lr_decay: 0.01,
+            max_gaussians: 1_000_000,
+            prune_scale_threshold: 0.5,
             
             // Rendering
             sh_degree: 0,  // Use RGB colors, not SH
@@ -212,7 +220,12 @@ pub fn densify_gaussians(
     
     // Add new Gaussians
     if !new_gaussians.is_empty() {
-        gaussians.extend(new_gaussians);
+        let available = config.max_gaussians.saturating_sub(gaussians.len());
+        if available == 0 {
+            return;
+        }
+        let limit = config.max_densify.min(available);
+        gaussians.extend(new_gaussians.into_iter().take(limit));
     }
 }
 
@@ -228,7 +241,9 @@ pub fn prune_gaussians(
     let original_len = gaussians.len();
     
     gaussians.retain(|g| {
-        g.opacity() > config.prune_opacity_threshold
+        let scale = g.scale();
+        let max_scale = scale[0].max(scale[1]).max(scale[2]);
+        g.opacity() > config.prune_opacity_threshold && max_scale <= config.prune_scale_threshold
     });
     
     original_len - gaussians.len()
@@ -356,22 +371,74 @@ pub fn compute_training_loss(
     loss
 }
 
+/// Compute PSNR (Peak Signal-to-Noise Ratio) for RGB buffers.
+pub fn compute_psnr(
+    rendered: &[f32],
+    target_color: &[u8],
+    width: usize,
+    height: usize,
+) -> f32 {
+    let expected = width * height * 3;
+    if rendered.len() != expected || target_color.len() != expected {
+        return 0.0;
+    }
+
+    let mut mse = 0.0f32;
+    for i in 0..expected {
+        let r = rendered[i];
+        let t = target_color[i] as f32 / 255.0;
+        let diff = r - t;
+        mse += diff * diff;
+    }
+
+    mse /= expected as f32;
+    if mse <= 1e-12 {
+        return 100.0;
+    }
+    10.0 * (1.0 / mse).log10()
+}
+
 /// Complete training state
 pub struct TrainingState {
     pub iteration: usize,
     pub gaussians: Vec<TrainableGaussian>,
     pub loss_history: Vec<f32>,
+    pub psnr_history: Vec<f32>,
     pub renderer: TiledRenderer,
+    /// Camera intrinsics
+    pub fx: f32,
+    pub fy: f32,
+    pub cx: f32,
+    pub cy: f32,
 }
 
 impl TrainingState {
     pub fn new(width: usize, height: usize) -> Self {
+        let cam = crate::config::CameraConfig::default();
         Self {
             iteration: 0,
             gaussians: Vec::new(),
             loss_history: Vec::new(),
+            psnr_history: Vec::new(),
             renderer: TiledRenderer::new(width, height),
+            fx: cam.fx,
+            fy: cam.fy,
+            cx: cam.cx,
+            cy: cam.cy,
         }
+    }
+
+    pub fn export_scene_ply(&self, output_dir: &Path) -> Result<PathBuf, SceneIoError> {
+        let path = output_dir.join("scene.ply");
+        let gaussians: Vec<Gaussian> = self.gaussians.iter().map(|g| g.to_gaussian()).collect();
+        let metadata = SceneMetadata {
+            iterations: self.iteration,
+            final_loss: self.loss_history.last().copied().unwrap_or(0.0),
+            gaussian_count: gaussians.len(),
+        };
+
+        save_scene_ply(&path, &gaussians, &metadata)?;
+        Ok(path)
     }
     
     /// Add Gaussians from depth frame
@@ -436,7 +503,7 @@ impl TrainingState {
         // Render
         let rendered = self.renderer.render(
             &render_gaussians,
-            500.0, 500.0, 320.0, 240.0,
+            self.fx, self.fy, self.cx, self.cy,
             rotation,
             translation,
         );
@@ -444,6 +511,84 @@ impl TrainingState {
         // Compute loss
         let loss = compute_training_loss(&rendered, target_color, target_depth, 0.1);
         self.loss_history.push(loss);
+
+        // Compute PSNR for diagnostics
+        let psnr = compute_psnr(&rendered.color, target_color, rendered.width, rendered.height);
+        self.psnr_history.push(psnr);
+
+        // === Simplified optimization ===
+        let (render_mean, target_mean) = mean_rgb(&rendered.color, target_color);
+        let depth_error = mean_depth_error(&rendered.depth, target_depth);
+
+        let lr_pos = get_learning_rate(self.iteration, config.lr_position, config.position_lr_decay);
+        let lr_scale = config.lr_scale;
+        let lr_rot = config.lr_rotation;
+        let lr_op = config.lr_opacity;
+        let lr_color = config.lr_color;
+
+        let fx = self.fx;
+        let fy = self.fy;
+        let cx = self.cx;
+        let cy = self.cy;
+
+        for g in &mut self.gaussians {
+            let mut local_depth_error = depth_error;
+            let mut local_color_delta = [
+                target_mean[0] - render_mean[0],
+                target_mean[1] - render_mean[1],
+                target_mean[2] - render_mean[2],
+            ];
+
+            if let Some((u, v, _z)) = project_world_to_pixel(g, fx, fy, cx, cy, rotation, translation) {
+                let px = u.round() as isize;
+                let py = v.round() as isize;
+                if px >= 0 && py >= 0 && px < rendered.width as isize && py < rendered.height as isize {
+                    let pidx = py as usize * rendered.width + px as usize;
+                    let cidx = pidx * 3;
+
+                    if pidx < rendered.depth.len() && pidx < target_depth.len() && target_depth[pidx] > 0.0 {
+                        local_depth_error = rendered.depth[pidx] - target_depth[pidx];
+                    }
+                    if cidx + 2 < rendered.color.len() && cidx + 2 < target_color.len() {
+                        local_color_delta = [
+                            target_color[cidx] as f32 / 255.0 - rendered.color[cidx],
+                            target_color[cidx + 1] as f32 / 255.0 - rendered.color[cidx + 1],
+                            target_color[cidx + 2] as f32 / 255.0 - rendered.color[cidx + 2],
+                        ];
+                    }
+                }
+            }
+
+            // Position update (depth-aligned)
+            g.z -= lr_pos * local_depth_error;
+            g.x -= lr_pos * local_depth_error * 0.1;
+            g.y -= lr_pos * local_depth_error * 0.1;
+
+            // Scale update (shrink if depth error is large)
+            let scale_adjust = (-local_depth_error).clamp(-0.1, 0.1) * lr_scale;
+            g.scale_log[0] += scale_adjust;
+            g.scale_log[1] += scale_adjust;
+            g.scale_log[2] += scale_adjust;
+
+            // Rotation update (nudge toward identity)
+            let rot_adjust = lr_rot * 0.1;
+            g.rotation[0] = (g.rotation[0] + rot_adjust).clamp(0.0, 1.0);
+
+            // Opacity update
+            g.opacity_logit += lr_op * (-local_depth_error).clamp(-1.0, 1.0);
+
+            // Color update (toward target mean)
+            g.color[0] = (g.color[0] + lr_color * local_color_delta[0]).clamp(0.0, 1.0);
+            g.color[1] = (g.color[1] + lr_color * local_color_delta[1]).clamp(0.0, 1.0);
+            g.color[2] = (g.color[2] + lr_color * local_color_delta[2]).clamp(0.0, 1.0);
+
+            // Track per-Gaussian local gradient proxy for densification/pruning.
+            let grad_mag = local_depth_error.abs()
+                + local_color_delta[0].abs()
+                + local_color_delta[1].abs()
+                + local_color_delta[2].abs();
+            g.grad_accum = (g.grad_accum * 0.9 + grad_mag).min(10.0);
+        }
         
         // (In full implementation, would compute gradients and update parameters)
         
@@ -471,15 +616,84 @@ impl TrainingState {
     }
 }
 
+fn mean_rgb(rendered: &[f32], target_color: &[u8]) -> ([f32; 3], [f32; 3]) {
+    if rendered.is_empty() || target_color.is_empty() {
+        return ([0.0; 3], [0.0; 3]);
+    }
+
+    let mut render_sum = [0.0f32; 3];
+    let mut target_sum = [0.0f32; 3];
+
+    let pixels = rendered.len() / 3;
+    for i in 0..pixels {
+        let idx = i * 3;
+        render_sum[0] += rendered[idx];
+        render_sum[1] += rendered[idx + 1];
+        render_sum[2] += rendered[idx + 2];
+
+        target_sum[0] += target_color[idx] as f32 / 255.0;
+        target_sum[1] += target_color[idx + 1] as f32 / 255.0;
+        target_sum[2] += target_color[idx + 2] as f32 / 255.0;
+    }
+
+    let inv = 1.0 / pixels.max(1) as f32;
+    (
+        [render_sum[0] * inv, render_sum[1] * inv, render_sum[2] * inv],
+        [target_sum[0] * inv, target_sum[1] * inv, target_sum[2] * inv],
+    )
+}
+
+fn mean_depth_error(rendered: &[f32], target: &[f32]) -> f32 {
+    if rendered.is_empty() || target.is_empty() || rendered.len() != target.len() {
+        return 0.0;
+    }
+    let mut sum = 0.0f32;
+    for i in 0..rendered.len() {
+        sum += rendered[i] - target[i];
+    }
+    sum / rendered.len().max(1) as f32
+}
+
+fn project_world_to_pixel(
+    gaussian: &TrainableGaussian,
+    fx: f32,
+    fy: f32,
+    cx: f32,
+    cy: f32,
+    rotation: &[[f32; 3]; 3],
+    translation: &[f32; 3],
+) -> Option<(f32, f32, f32)> {
+    // Keep the same convention as Gaussian3D::project:
+    // x_cam = R^T * (x_world - t)
+    let dx = gaussian.x - translation[0];
+    let dy = gaussian.y - translation[1];
+    let dz = gaussian.z - translation[2];
+
+    let x_cam = rotation[0][0] * dx + rotation[1][0] * dy + rotation[2][0] * dz;
+    let y_cam = rotation[0][1] * dx + rotation[1][1] * dy + rotation[2][1] * dz;
+    let z_cam = rotation[0][2] * dx + rotation[1][2] * dy + rotation[2][2] * dz;
+
+    if z_cam <= 1e-6 {
+        return None;
+    }
+
+    let u = fx * x_cam / z_cam + cx;
+    let v = fy * y_cam / z_cam + cy;
+    Some((u, v, z_cam))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fusion::scene_io::load_scene_ply;
+    use tempfile::tempdir;
 
     #[test]
     fn test_training_config() {
         let config = TrainingConfig::default();
-        assert_eq!(config.iterations, 30_000);
+        assert_eq!(config.iterations, 3_000);
         assert_eq!(config.densify_interval, 100);
+        assert_eq!(config.max_gaussians, 1_000_000);
     }
 
     #[test]
@@ -517,9 +731,9 @@ mod tests {
             },
             TrainableGaussian {
                 x: 1.0, y: 0.0, z: 0.0,
-                scale_log: [-5.0, -5.0, -5.0],
+                scale_log: [1.0, 1.0, 1.0],
                 rotation: [1.0, 0.0, 0.0, 0.0],
-                opacity_logit: 0.0,  // High opacity
+                opacity_logit: 10.0,  // High opacity
                 color: [1.0, 1.0, 1.0],
                 grad_accum: 0.0,
                 age: 0,
@@ -528,7 +742,42 @@ mod tests {
         
         let pruned = prune_gaussians(&mut gaussians, &config);
         
-        assert_eq!(pruned, 1);
-        assert_eq!(gaussians.len(), 1);
+        assert_eq!(pruned, 2);
+        assert_eq!(gaussians.len(), 0);
+    }
+
+    #[test]
+    fn test_compute_psnr() {
+        let width = 2;
+        let height = 2;
+        let rendered = vec![0.5f32; width * height * 3];
+        let target = vec![128u8; width * height * 3];
+
+        let psnr = compute_psnr(&rendered, &target, width, height);
+        assert!(psnr > 20.0);
+    }
+
+    #[test]
+    fn test_export_scene_ply() {
+        let mut state = TrainingState::new(2, 2);
+        state.gaussians.push(TrainableGaussian::from_gaussian(&Gaussian::new(
+            [0.0, 0.0, 1.0],
+            [0.1, 0.1, 0.1],
+            [1.0, 0.0, 0.0, 0.0],
+            0.5,
+            [0.2, 0.3, 0.4],
+        )));
+        state.iteration = 42;
+        state.loss_history.push(0.25);
+
+        let dir = tempdir().unwrap();
+        let path = state.export_scene_ply(dir.path()).unwrap();
+        assert_eq!(path, dir.path().join("scene.ply"));
+
+        let (loaded, metadata) = load_scene_ply(&path).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(metadata.iterations, 42);
+        assert!((metadata.final_loss - 0.25).abs() < 1e-6);
+        assert_eq!(metadata.gaussian_count, 1);
     }
 }

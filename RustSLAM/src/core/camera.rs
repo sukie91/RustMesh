@@ -1,6 +1,7 @@
 //! Camera model representation
 
 use glam::{Mat3, Vec3};
+use crate::config::config::CameraConfig;
 
 /// Camera intrinsic parameters
 #[derive(Debug, Clone, Copy)]
@@ -37,6 +38,11 @@ impl Camera {
             height,
             distortion: None,
         }
+    }
+
+    /// Create a camera from CameraConfig
+    pub fn from_config(config: &CameraConfig) -> Self {
+        Self::new(config.fx, config.fy, config.cx, config.cy, config.width, config.height)
     }
 
     /// Get the intrinsic matrix
