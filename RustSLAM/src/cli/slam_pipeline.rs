@@ -3,8 +3,8 @@
 use crate::config::SlamConfig;
 use crate::core::{Frame, FrameFeatures};
 use crate::features::{
-    Descriptors, FeatureExtractor, HarrisDetector, HarrisParams, Match, OrbExtractor, FastDetector,
-    FastParams, KnnMatcher,
+    Descriptors, FeatureExtractor, FeatureMatcher, HarrisDetector, HarrisParams, Match, OrbExtractor, FastDetector,
+    FastParams, HammingMatcher,
 };
 use crate::features::base::{FeatureError, ORB_DESCRIPTOR_SIZE};
 
@@ -150,15 +150,13 @@ impl FeatureExtractorEngine {
 }
 
 pub struct FeatureMatcherEngine {
-    matcher: KnnMatcher,
-    ratio_threshold: f64,
+    matcher: HammingMatcher,
 }
 
 impl FeatureMatcherEngine {
     pub fn new(ratio_threshold: f64) -> Self {
         Self {
-            matcher: KnnMatcher::new(2),
-            ratio_threshold,
+            matcher: HammingMatcher::new(2).with_ratio_threshold(ratio_threshold),
         }
     }
 
@@ -171,25 +169,10 @@ impl FeatureMatcherEngine {
             return Ok(Vec::new());
         }
 
-        let train = descriptors_to_arrays(&previous.descriptors);
-        let query = descriptors_to_arrays(&current.descriptors);
-        self.matcher.build_tree(&train);
-
-        let raw_matches = self.matcher.match_batch_with_ratio(&query, self.ratio_threshold);
-        let mut matches = Vec::with_capacity(raw_matches.len());
-        for (query_idx, candidates) in raw_matches {
-            for (distance, train_idx) in candidates {
-                matches.push(Match {
-                    query_idx: query_idx as u32,
-                    train_idx: train_idx as u32,
-                    distance: distance as f32,
-                });
-            }
-        }
-
-        if matches.is_empty() {
-            return Ok(Vec::new());
-        }
+        let mut matches = self.matcher.match_descriptors(
+            &current.descriptors,
+            &previous.descriptors,
+        ).map_err(|e| SlamPipelineError::FeatureMatching(e))?;
 
         matches.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
         Ok(matches)
@@ -253,16 +236,3 @@ fn build_patch_descriptors(
     descriptors
 }
 
-fn descriptors_to_arrays(descriptors: &Descriptors) -> Vec<[f64; ORB_DESCRIPTOR_SIZE]> {
-    descriptors
-        .data
-        .chunks(ORB_DESCRIPTOR_SIZE)
-        .map(|chunk| {
-            let mut arr = [0.0; ORB_DESCRIPTOR_SIZE];
-            for (i, &byte) in chunk.iter().enumerate() {
-                arr[i] = byte as f64;
-            }
-            arr
-        })
-        .collect()
-}

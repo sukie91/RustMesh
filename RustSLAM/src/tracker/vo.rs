@@ -1,9 +1,20 @@
 //! Visual Odometry
 
-use crate::core::{Camera, SE3};
-use crate::features::{FeatureExtractor, FeatureMatcher, KeyPoint, Descriptors};
+use crate::config::{FeatureType, TrackerParams};
+use crate::core::{Camera, FrameFeatures, SE3};
+use crate::features::{
+    FeatureExtractor,
+    FeatureMatcher,
+    KeyPoint,
+    Descriptors,
+    OrbExtractor,
+    HammingMatcher,
+    HarrisExtractor,
+    HarrisParams,
+    FastExtractor,
+    FastParams,
+};
 use crate::tracker::solver::{PnPSolver, EssentialSolver, Triangulator};
-use glam::Mat3;
 
 /// Visual Odometry state
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -79,9 +90,20 @@ pub struct VisualOdometry {
 impl VisualOdometry {
     /// Create a new VO with default feature extraction
     pub fn new(camera: Camera) -> Self {
-        // Use default ORB extractor
-        let extractor = Box::new(crate::features::OrbExtractor::new(2000));
-        let matcher = Box::new(crate::features::KnnMatcher::new(2));
+        Self::with_params(camera, TrackerParams::default())
+    }
+
+    /// Create a new VO with tracker parameters
+    pub fn with_params(camera: Camera, params: TrackerParams) -> Self {
+        let extractor: Box<dyn FeatureExtractor> = match params.feature_type {
+            FeatureType::Orb => Box::new(OrbExtractor::new(params.max_features)),
+            FeatureType::Harris => Box::new(HarrisExtractor::new(params.max_features, HarrisParams::default())),
+            FeatureType::Fast => Box::new(FastExtractor::new(params.max_features, FastParams::default())),
+        };
+        // All feature types now produce binary BRIEF descriptors → use Hamming distance
+        let matcher: Box<dyn FeatureMatcher> = Box::new(
+            HammingMatcher::new(2).with_ratio_threshold(params.match_ratio as f64)
+        );
 
         // Get intrinsics from camera
         let fx = camera.focal.x;
@@ -105,8 +127,8 @@ impl VisualOdometry {
             prev_descriptors: Descriptors::new(),
             prev_3d_points: Vec::new(),
             frame_count: 0,
-            min_matches: 20,
-            min_inliers: 10,
+            min_matches: params.min_matches,
+            min_inliers: params.min_inliers,
         }
     }
 
@@ -138,7 +160,7 @@ impl VisualOdometry {
             prev_descriptors: Descriptors::new(),
             prev_3d_points: Vec::new(),
             frame_count: 0,
-            min_matches: 20,
+            min_matches: 50,
             min_inliers: 10,
         }
     }
@@ -211,38 +233,51 @@ impl VisualOdometry {
             return VOResult::failure();
         }
 
-        // Extract points
-        let pts1: Vec<[f32; 2]> = self.prev_keypoints.iter()
-            .map(|kp| [kp.x(), kp.y()])
-            .collect();
-        let pts2: Vec<[f32; 2]> = keypoints.iter()
-            .map(|kp| [kp.x(), kp.y()])
-            .collect();
+        // Extract matched points
+        let mut pts1 = Vec::with_capacity(matches.len());
+        let mut pts2 = Vec::with_capacity(matches.len());
+        for m in &matches {
+            let train_idx = m.train_idx as usize;
+            let query_idx = m.query_idx as usize;
+            if train_idx < self.prev_keypoints.len() && query_idx < keypoints.len() {
+                pts1.push([self.prev_keypoints[train_idx].x(), self.prev_keypoints[train_idx].y()]);
+                pts2.push([keypoints[query_idx].x(), keypoints[query_idx].y()]);
+            }
+        }
 
         // Compute essential matrix
-        if let Some((_E, inliers)) = self.essential_solver.compute(&matches, &pts1, &pts2) {
+        if let Some((E, inliers)) = self.essential_solver.compute(&matches, &pts1, &pts2) {
             let inlier_count = inliers.iter().filter(|&&x| x).count();
             
             if inlier_count >= self.min_inliers || matches.len() >= self.min_matches {
                 // Recover pose from essential matrix
-                let poses = self.essential_solver.recover_pose(Mat3::IDENTITY);
-                
-                // Use the first pose (simplified)
-                let pose = poses[0].clone();
-                
-                // Triangulate 3D points
+                let poses = self.essential_solver.recover_pose(E);
                 let prev_pose = SE3::identity();
-                self.prev_3d_points = self.triangulator.triangulate(
-                    &prev_pose,
-                    &pose,
-                    &pts1,
-                    &pts2,
-                );
+                let mut best_pose = poses[0];
+                let mut best_points = Vec::new();
+                let mut best_count = 0usize;
+
+                for pose in poses {
+                    let triangulated = self.triangulator.triangulate(
+                        &prev_pose,
+                        &pose,
+                        &pts1,
+                        &pts2,
+                    );
+                    let count = triangulated.iter().filter(|pt| pt.is_some()).count();
+                    if count > best_count {
+                        best_count = count;
+                        best_pose = pose;
+                        best_points = triangulated;
+                    }
+                }
+
+                self.prev_3d_points = best_points;
                 
                 self.state = VOState::TrackingOk;
                 
                 return VOResult {
-                    pose,
+                    pose: best_pose,
                     num_matches: matches.len(),
                     num_inliers: inlier_count,
                     success: true,
@@ -340,6 +375,23 @@ impl VisualOdometry {
     /// Set minimum inliers threshold
     pub fn set_min_inliers(&mut self, min: usize) {
         self.min_inliers = min;
+    }
+
+    /// Get features from the last successfully processed frame.
+    pub fn last_features(&self) -> Option<FrameFeatures> {
+        if self.prev_keypoints.is_empty() || self.prev_descriptors.is_empty() {
+            return None;
+        }
+
+        Some(FrameFeatures {
+            keypoints: self
+                .prev_keypoints
+                .iter()
+                .map(|kp| [kp.x(), kp.y()])
+                .collect(),
+            descriptors: self.prev_descriptors.data.clone(),
+            map_points: vec![None; self.prev_keypoints.len()],
+        })
     }
 }
 

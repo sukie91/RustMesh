@@ -8,7 +8,7 @@
 
 // Re-export core types
 pub use core::{Frame, FrameFeatures, KeyFrame, MapPoint, Map, Camera, SE3};
-pub use features::{FeatureExtractor, FeatureMatcher, KeyPoint, Descriptors, Match, OrbExtractor, KnnMatcher};
+pub use features::{FeatureExtractor, FeatureMatcher, KeyPoint, Descriptors, Match, OrbExtractor, KnnMatcher, DistanceMetric};
 pub use tracker::{VisualOdometry, VOState, VOResult};
 
 // Modules
