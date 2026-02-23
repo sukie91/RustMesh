@@ -185,9 +185,9 @@ impl TiledRenderer {
         (tile_x_min, tile_x_max, tile_y_min, tile_y_max)
     }
 
-    /// Sort Gaussians by depth (back to front)
+    /// Sort Gaussians by depth (front to back)
     pub fn sort_by_depth(&self, gaussians: &mut [ProjectedGaussian]) {
-        gaussians.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+        gaussians.sort_by(|a, b| a.depth.partial_cmp(&b.depth).unwrap_or(std::cmp::Ordering::Equal));
     }
 
     /// Render with tiled rasterization
@@ -196,7 +196,7 @@ impl TiledRenderer {
     /// 1. Project Gaussians to 2D
     /// 2. Compute tile bounds
     /// 3. For each tile, sort Gaussians that overlap it
-    /// 4. Render with alpha blending (back to front)
+    /// 4. Render with alpha blending (front to back)
     pub fn render(
         &self,
         gaussians: &[Gaussian],
@@ -210,58 +210,86 @@ impl TiledRenderer {
         // Project to 2D
         let mut projected = self.project_gaussians(gaussians, fx, fy, cx, cy, rotation, translation);
         
-        // Sort by depth
-        self.sort_by_depth(&mut projected);
-        
         // Initialize output buffers
         let mut color_buf = vec![0.0f32; self.width * self.height * 3];
         let mut depth_buf = vec![f32::MAX; self.width * self.height];
         let mut alpha_buf = vec![0.0f32; self.width * self.height];
         
         let tile_alpha = 4.0; // Alpha multiplier for tile assignment
-        
-        // For each Gaussian (back to front)
-        for g in &projected {
-            // Compute tile bounds
-            let (tile_x_min, tile_x_max, tile_y_min, tile_y_max) = self.compute_tile_bounds(g, tile_alpha);
-            
-            // For each pixel in bounds
+
+        let tile_count = self.num_tiles_x * self.num_tiles_y;
+        let mut tile_lists: Vec<Vec<usize>> = vec![Vec::new(); tile_count];
+
+        // Assign Gaussians to tiles based on bounds
+        for (idx, g) in projected.iter().enumerate() {
+            let (tile_x_min, tile_x_max, tile_y_min, tile_y_max) =
+                self.compute_tile_bounds(g, tile_alpha);
+
             for ty in tile_y_min..tile_y_max {
                 for tx in tile_x_min..tile_x_max {
-                    // Pixel coordinates
-                    let px_start = tx * self.tile_width;
-                    let py_start = ty * self.tile_height;
-                    
-                    for py in py_start..(py_start + self.tile_height).min(self.height) {
-                        for px in px_start..(px_start + self.tile_width).min(self.width) {
+                    let tile_idx = ty * self.num_tiles_x + tx;
+                    tile_lists[tile_idx].push(idx);
+                }
+            }
+        }
+
+        // Process each tile independently
+        for ty in 0..self.num_tiles_y {
+            for tx in 0..self.num_tiles_x {
+                let tile_idx = ty * self.num_tiles_x + tx;
+                let gaussians_in_tile = &mut tile_lists[tile_idx];
+                if gaussians_in_tile.is_empty() {
+                    continue;
+                }
+
+                // Front-to-back sort for correct alpha blending
+                gaussians_in_tile.sort_by(|a, b| {
+                    projected[*a]
+                        .depth
+                        .partial_cmp(&projected[*b].depth)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                let px_start = tx * self.tile_width;
+                let py_start = ty * self.tile_height;
+                let px_end = (px_start + self.tile_width).min(self.width);
+                let py_end = (py_start + self.tile_height).min(self.height);
+
+                for &g_idx in gaussians_in_tile.iter() {
+                    let g = &projected[g_idx];
+
+                    // Precompute inverse covariance for Mahalanobis distance
+                    // Σ⁻¹ = (1/det) * [[cov_yy, -cov_xy], [-cov_xy, cov_xx]]
+                    let det = g.cov_xx * g.cov_yy - g.cov_xy * g.cov_xy;
+                    if det < 1e-10 { continue; }
+                    let inv_det = 1.0 / det;
+
+                    for py in py_start..py_end {
+                        for px in px_start..px_end {
                             let idx = py * self.width + px;
-                            
-                            // Check if pixel is inside Gaussian
+
+                            if alpha_buf[idx] >= 0.999 {
+                                continue;
+                            }
+
                             let dx = px as f32 - g.x;
                             let dy = py as f32 - g.y;
-                            
-                            // Mahalanobis distance
-                            let dist = (g.cov_xx * dx * dx + 2.0 * g.cov_xy * dx * dy + g.cov_yy * dy * dy).sqrt();
-                            
-                            if dist < 3.0 {
-                                // Gaussian weight
-                                let weight = (-0.5 * dist * dist).exp() * g.opacity;
-                                
+                            let d_sq = (g.cov_yy * dx * dx - 2.0 * g.cov_xy * dx * dy + g.cov_xx * dy * dy) * inv_det;
+
+                            if d_sq < 9.0 {
+                                let weight = (-0.5 * d_sq).exp() * g.opacity;
                                 if weight > 0.001 {
-                                    // Alpha blend
-                                    let alpha = weight * (1.0 - alpha_buf[idx]);
-                                    
-                                    // Accumulate color
-                                    color_buf[idx * 3] += g.color[0] * alpha;
-                                    color_buf[idx * 3 + 1] += g.color[1] * alpha;
-                                    color_buf[idx * 3 + 2] += g.color[2] * alpha;
-                                    
-                                    // Accumulate alpha
-                                    alpha_buf[idx] += alpha;
-                                    
-                                    // Depth (weighted average)
-                                    if alpha > 0.01 {
-                                        depth_buf[idx] = g.depth;
+                                    let transmittance = 1.0 - alpha_buf[idx];
+                                    let alpha = weight * transmittance;
+                                    if alpha > 0.0 {
+                                        color_buf[idx * 3] += g.color[0] * alpha;
+                                        color_buf[idx * 3 + 1] += g.color[1] * alpha;
+                                        color_buf[idx * 3 + 2] += g.color[2] * alpha;
+                                        alpha_buf[idx] += alpha;
+
+                                        if depth_buf[idx] == f32::MAX && alpha > 0.01 {
+                                            depth_buf[idx] = g.depth;
+                                        }
                                     }
                                 }
                             }
@@ -386,9 +414,9 @@ mod tests {
         let renderer = TiledRenderer::new(64, 64);
         renderer.sort_by_depth(&mut gaussians);
         
-        // Should be sorted back to front (far to near)
-        assert_eq!(gaussians[0].depth, 3.0);
+        // Should be sorted front to back (near to far)
+        assert_eq!(gaussians[0].depth, 1.0);
         assert_eq!(gaussians[1].depth, 2.0);
-        assert_eq!(gaussians[2].depth, 1.0);
+        assert_eq!(gaussians[2].depth, 3.0);
     }
 }
