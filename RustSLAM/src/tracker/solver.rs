@@ -5,7 +5,8 @@
 use std::f32::consts::PI;
 use crate::core::SE3;
 use crate::features::base::Match;
-use glam::{Mat3, Mat4, Vec3};
+use glam::{Mat3, Vec3};
+use nalgebra::{DMatrix, Matrix3, Vector3 as NaVec3};
 
 /// 2D-3D correspondence for PnP
 #[derive(Debug, Clone)]
@@ -85,14 +86,23 @@ impl PnPSolver {
             ])
             .collect();
         
+        let threshold = (self.ransac_threshold / self.fx.max(self.fy).max(1.0)).max(0.01);
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1)
+            ^ (n as u64);
+        let mut rng = Lcg::new(seed);
+
         // RANSAC loop
         let mut best_inliers: Vec<bool> = vec![false; n];
         let mut best_pose: Option<SE3> = None;
         let mut best_inlier_count = 0;
-        
+
         for _ in 0..self.ransac_max_iterations {
             // Randomly select 3 points for P3P
-            let indices = self.random_indices(n, 3);
+            let indices = self.random_indices(&mut rng, n, 3);
             
             // Solve P3P for these 3 points
             if let Some(poses) = self.solve_p3p(&normalized_pts, &problem.object_points, &indices) {
@@ -105,7 +115,7 @@ impl PnPSolver {
                         let projected = self.project_point(&pose, &problem.object_points[i]);
                         let error = self.reprojection_error(&normalized_pts[i], &projected);
                         
-                        if error < self.ransac_threshold {
+                        if error < threshold {
                             inliers[i] = true;
                             inlier_count += 1;
                         }
@@ -126,23 +136,45 @@ impl PnPSolver {
             }
         }
         
-        // Refine pose with all inliers using EPnP or DLT
+        if best_pose.is_none() {
+            if let Some(pose) = self.estimate_pose_dlt(&normalized_pts, &problem.object_points) {
+                let mut inliers = vec![false; n];
+                let mut inlier_count = 0usize;
+                for i in 0..n {
+                    let projected = self.project_point(&pose, &problem.object_points[i]);
+                    let error = self.reprojection_error(&normalized_pts[i], &projected);
+                    if error < threshold {
+                        inliers[i] = true;
+                        inlier_count += 1;
+                    }
+                }
+                if inlier_count > 0 {
+                    best_pose = Some(pose);
+                    best_inliers = inliers;
+                    best_inlier_count = inlier_count;
+                }
+            }
+            if best_pose.is_none() {
+                return None;
+            }
+        }
+
+        // Refine pose with all inliers
         if let Some(ref mut pose) = best_pose {
             if best_inlier_count >= 4 {
                 *pose = self.refine_pose(pose, &normalized_pts, &problem.object_points, &best_inliers);
             }
         }
-        
+
         Some((best_pose.unwrap_or(SE3::identity()), best_inliers))
     }
 
     /// Randomly select k indices
-    fn random_indices(&self, n: usize, k: usize) -> Vec<usize> {
+    fn random_indices(&self, rng: &mut Lcg, n: usize, k: usize) -> Vec<usize> {
         use std::collections::HashSet;
         let mut selected = HashSet::new();
         while selected.len() < k.min(n) {
-            // Simple pseudo-random selection
-            let idx = ((selected.len() * 17 + 31) % n);
+            let idx = rng.gen_range(n);
             selected.insert(idx);
         }
         selected.into_iter().collect()
@@ -152,47 +184,25 @@ impl PnPSolver {
     /// 
     /// Given 3 2D-3D correspondences, compute up to 4 possible camera poses
     fn solve_p3p(&self, img_pts: &[[f32; 2]], obj_pts:&[[f32; 3]], indices: &[usize]) -> Option<Vec<SE3>> {
-        // Simplified P3P using geometric approach
-        // For robust implementation, use the analytical solution
-        
-        let p1 = obj_pts[indices[0]];
-        let p2 = obj_pts[indices[1]];
-        let p3 = obj_pts[indices[2]];
-        
-        // Normalize 3D points
-        let center = Vec3::new(
-            (p1[0] + p2[0] + p3[0]) / 3.0,
-            (p1[1] + p2[1] + p3[1]) / 3.0,
-            (p1[2] + p2[2] + p3[2]) / 3.0,
-        );
-        
-        let q1 = Vec3::new(p1[0] - center.x, p1[1] - center.y, p1[2] - center.z);
-        let q2 = Vec3::new(p2[0] - center.x, p2[1] - center.y, p2[2] - center.z);
-        let q3 = Vec3::new(p3[0] - center.x, p3[1] - center.y, p3[2] - center.z);
-        
-        // Distances between 3D points
-        let d_12 = (q1 - q2).length();
-        let d_23 = (q2 - q3).length();
-        let d_31 = (q3 - q1).length();
-        
-        // Image points (normalized)
-        let u1 = Vec3::new(img_pts[indices[0]][0], img_pts[indices[0]][1], 1.0).normalize();
-        let u2 = Vec3::new(img_pts[indices[1]][0], img_pts[indices[1]][1], 1.0).normalize();
-        let u3 = Vec3::new(img_pts[indices[2]][0], img_pts[indices[2]][1], 1.0).normalize();
-        
-        // Solve for distances from camera to 3D points
-        // This is a simplified version - real P3P has analytical solution
-        let mut poses = Vec::new();
-        
-        // Try different solutions (simplified: just identity for now)
-        // In production, use the analytical P3P solution
-        poses.push(SE3::identity());
-        
-        if poses.is_empty() {
+        if indices.len() < 3 {
             return None;
         }
-        
-        Some(poses)
+
+        let mut sample = indices.to_vec();
+        if let Some(extra) = (0..obj_pts.len()).find(|idx| !sample.contains(idx)) {
+            sample.push(extra);
+        } else {
+            return None;
+        }
+
+        let mut sample_img = Vec::with_capacity(sample.len());
+        let mut sample_obj = Vec::with_capacity(sample.len());
+        for &idx in &sample {
+            sample_img.push(img_pts[idx]);
+            sample_obj.push(obj_pts[idx]);
+        }
+
+        self.estimate_pose_dlt(&sample_img, &sample_obj).map(|pose| vec![pose])
     }
 
     /// Project a 3D point to normalized image coordinates
@@ -212,7 +222,7 @@ impl PnPSolver {
         (dx * dx + dy * dy).sqrt()
     }
 
-    /// Refine pose using all inliers (DLT-based)
+    /// Refine pose using all inliers with Gauss-Newton
     fn refine_pose(&self, initial: &SE3, img_pts: &[[f32; 2]], obj_pts: &[[f32; 3]], inliers: &[bool]) -> SE3 {
         // Collect inlier correspondences
         let mut inlier_img = Vec::new();
@@ -229,9 +239,118 @@ impl PnPSolver {
             return *initial;
         }
         
-        // Use DLT to refine (simplified - just return initial for now)
-        // In production, implement iterative refinement
-        *initial
+        let mut pose = *initial;
+        let eps = 1e-4f32;
+        for _ in 0..8 {
+            let mut h = nalgebra::SMatrix::<f32, 6, 6>::zeros();
+            let mut b = nalgebra::SVector::<f32, 6>::zeros();
+            let mut valid_obs = 0usize;
+
+            for (obs, obj) in inlier_img.iter().zip(inlier_obj.iter()) {
+                let projected = self.project_point(&pose, obj);
+                let e = nalgebra::SVector::<f32, 2>::new(
+                    obs[0] - projected[0],
+                    obs[1] - projected[1],
+                );
+
+                let mut j = nalgebra::SMatrix::<f32, 2, 6>::zeros();
+                for k in 0..6 {
+                    let mut delta = [0.0f32; 6];
+                    delta[k] = eps;
+                    let pose_perturbed = SE3::exp(&delta).compose(&pose);
+                    let p_plus = self.project_point(&pose_perturbed, obj);
+                    j[(0, k)] = (p_plus[0] - projected[0]) / eps;
+                    j[(1, k)] = (p_plus[1] - projected[1]) / eps;
+                }
+
+                h += j.transpose() * j;
+                b += j.transpose() * e;
+                valid_obs += 1;
+            }
+
+            if valid_obs < 4 {
+                break;
+            }
+
+            for d in 0..6 {
+                h[(d, d)] += 1e-6;
+            }
+
+            let Some(delta) = h.lu().solve(&b) else {
+                break;
+            };
+
+            let mut twist = [0.0f32; 6];
+            for k in 0..6 {
+                twist[k] = delta[k];
+            }
+            pose = SE3::exp(&twist).compose(&pose);
+
+            if delta.norm() < 1e-5 {
+                break;
+            }
+        }
+
+        pose
+    }
+
+    fn estimate_pose_dlt(&self, img_pts: &[[f32; 2]], obj_pts: &[[f32; 3]]) -> Option<SE3> {
+        let n = img_pts.len().min(obj_pts.len());
+        if n < 4 {
+            return None;
+        }
+
+        let mut a_data = Vec::with_capacity(n * 2 * 12);
+        for i in 0..n {
+            let u = img_pts[i][0];
+            let v = img_pts[i][1];
+            let x = obj_pts[i][0];
+            let y = obj_pts[i][1];
+            let z = obj_pts[i][2];
+
+            a_data.extend_from_slice(&[
+                x, y, z, 1.0, 0.0, 0.0, 0.0, 0.0, -u * x, -u * y, -u * z, -u,
+            ]);
+            a_data.extend_from_slice(&[
+                0.0, 0.0, 0.0, 0.0, x, y, z, 1.0, -v * x, -v * y, -v * z, -v,
+            ]);
+        }
+
+        let a = DMatrix::<f32>::from_row_slice(n * 2, 12, &a_data);
+        let svd = a.svd(true, true);
+        let v_t = svd.v_t?;
+        let p = v_t.row(v_t.nrows() - 1);
+
+        let mut pmat = nalgebra::SMatrix::<f32, 3, 4>::zeros();
+        for r in 0..3 {
+            for c in 0..4 {
+                pmat[(r, c)] = p[r * 4 + c];
+            }
+        }
+
+        let m = pmat.fixed_view::<3, 3>(0, 0).into_owned();
+        let mut scale = (m.row(0).norm() + m.row(1).norm() + m.row(2).norm()) / 3.0;
+        if !scale.is_finite() || scale.abs() < 1e-8 {
+            return None;
+        }
+        if scale < 0.0 {
+            scale = -scale;
+            pmat = -pmat;
+        }
+
+        let m_norm = pmat.fixed_view::<3, 3>(0, 0).into_owned() / scale;
+        let svd_r = m_norm.svd(true, true);
+        let u = svd_r.u?;
+        let v_t = svd_r.v_t?;
+        let mut r = u * v_t;
+        if r.determinant() < 0.0 {
+            r = -r;
+        }
+
+        let t = pmat.column(3) / scale;
+        let rotation = mat3_to_array(&r);
+        let translation = [t[0], t[1], t[2]];
+        Some(SE3::from_rotation_translation(&rotation, &translation))
     }
 }
 
@@ -260,37 +379,38 @@ impl EssentialSolver {
         }
 
         let n = pts1.len().min(pts2.len());
-        
-        // Normalize points
-        let (norm_pts1, T1) = self.normalize_points(pts1);
-        let (norm_pts2, T2) = self.normalize_points(pts2);
-        
-        // Build the constraint matrix for 8-point algorithm
-        let mut A = Vec::new();
-        for i in 0..n {
-            let x1 = &norm_pts1[i];
-            let x2 = &norm_pts2[i];
-            // [x'*x, x'*y, x', y'*x, y'*y, y', x, y, 1]
-            A.push([
-                x2[0] * x1[0], x2[0] * x1[1], x2[0],
-                x2[1] * x1[0], x2[1] * x1[1], x2[1],
-                x1[0], x1[1], 1.0,
-            ]);
+        let mut rng = Lcg::new(n as u64 + (self.ransac_max_iterations as u64));
+        let mut best_inliers = Vec::new();
+        let mut best_E = None;
+
+        for _ in 0..self.ransac_max_iterations {
+            let sample = rng.sample_unique(n, 8);
+            if sample.len() < 8 {
+                continue;
+            }
+
+            let mut s1 = Vec::with_capacity(8);
+            let mut s2 = Vec::with_capacity(8);
+            for &idx in &sample {
+                s1.push(pts1[idx]);
+                s2.push(pts2[idx]);
+            }
+
+            let E = self.compute_essential(&s1, &s2)?;
+            let inliers = self.inlier_mask(pts1, pts2, &E);
+            let count = inliers.iter().filter(|&&x| x).count();
+            if count > best_inliers.iter().filter(|&&x| x).count() {
+                best_inliers = inliers;
+                best_E = Some(E);
+            }
         }
-        
-        // Solve using SVD: find eigenvector with smallest eigenvalue
-        let E_norm = self.solve_8point(&A)?;
-        
-        // Enforce rank-2 constraint
-        let E = self.enforce_rank2(E_norm);
-        
-        // Denormalize: E = T2'^T * E_norm * T1
-        let E = T2.transpose() * E * T1;
-        
-        // RANSAC for robustness
-        let inliers = self.ransac_filter(&norm_pts1, &norm_pts2, &E);
-        
-        Some((E, inliers))
+
+        let E = best_E.or_else(|| self.compute_essential(pts1, pts2))?;
+        if best_inliers.is_empty() {
+            best_inliers = self.inlier_mask(pts1, pts2, &E);
+        }
+
+        Some((E, best_inliers))
     }
 
     /// Normalize points for numerical stability
@@ -341,43 +461,69 @@ impl EssentialSolver {
         if n < 8 {
             return None;
         }
-        
-        // Simplified: return identity matrix as placeholder
-        // In production, implement proper SVD decomposition
-        // A * E = 0, find nullspace of A
-        Some(Mat3::IDENTITY)
+
+        let mut data = Vec::with_capacity(n * 9);
+        for row in A {
+            data.extend_from_slice(row);
+        }
+
+        let mat = DMatrix::<f32>::from_row_slice(n, 9, &data);
+        let svd = mat.svd(true, true);
+        let v_t = svd.v_t?;
+        if v_t.nrows() == 0 {
+            return None;
+        }
+        let e_vec = v_t.row(v_t.nrows() - 1);
+        let e = Matrix3::from_row_slice(&[
+            e_vec[0], e_vec[1], e_vec[2],
+            e_vec[3], e_vec[4], e_vec[5],
+            e_vec[6], e_vec[7], e_vec[8],
+        ]);
+
+        Some(mat3_from_na(&e))
     }
 
     /// Enforce rank-2 constraint on essential matrix
     pub fn enforce_rank2(&self, E: Mat3) -> Mat3 {
-        // SVD decomposition: E = U * S * V^T
-        // Force smallest singular value to 0: E' = U * diag(s1, s2, 0) * V^T
-        
-        // Simplified: just return E for now
-        // In production, implement proper SVD
-        E
+        let na_e = mat3_to_na(&E);
+        let svd = na_e.svd(true, true);
+        let mut u = svd.u.unwrap_or(Matrix3::identity());
+        let mut v_t = svd.v_t.unwrap_or(Matrix3::identity());
+        if u.determinant() < 0.0 {
+            u *= -1.0;
+        }
+        if v_t.determinant() < 0.0 {
+            v_t *= -1.0;
+        }
+
+        let s = svd.singular_values;
+        let sigma = Matrix3::from_diagonal(&NaVec3::new(s[0], s[1], 0.0));
+        let e_rank2 = u * sigma * v_t;
+        mat3_from_na(&e_rank2)
     }
 
     /// RANSAC filtering
-    fn ransac_filter(&self, pts1: &[[f32; 2]], pts2: &[[f32; 2]], E: &Mat3) -> Vec<bool> {
-        let n = pts1.len();
-        let mut inliers = vec![true; n];  // All points as inliers for now
-        
-        // Simplified: check epipolar constraint
-        // For each point, the epipolar line should pass through the other point
+    fn inlier_mask(&self, pts1: &[[f32; 2]], pts2: &[[f32; 2]], E: &Mat3) -> Vec<bool> {
+        let n = pts1.len().min(pts2.len());
+        let na_e = mat3_to_na(E);
+        let threshold = self.ransac_threshold.max(1e-6);
+        let mut inliers = Vec::with_capacity(n);
+
         for i in 0..n {
-            let x1 = Vec3::new(pts1[i][0], pts1[i][1], 1.0).normalize();
-            let x2 = Vec3::new(pts2[i][0], pts2[i][1], 1.0).normalize();
-            
-            let line = E.transpose() * x2;  // Epipolar line in image 1
-            let line_norm = line.normalize();
-            let error = line_norm.dot(x1).abs();
-            
-            if error > self.ransac_threshold {
-                inliers[i] = false;
-            }
+            let x1 = NaVec3::new(pts1[i][0], pts1[i][1], 1.0);
+            let x2 = NaVec3::new(pts2[i][0], pts2[i][1], 1.0);
+            let ex1 = na_e * x1;
+            let etx2 = na_e.transpose() * x2;
+            let x2t_ex1 = x2.transpose() * na_e * x1;
+            let denom = ex1[0] * ex1[0] + ex1[1] * ex1[1] + etx2[0] * etx2[0] + etx2[1] * etx2[1];
+            let dist = if denom > 1e-12 {
+                (x2t_ex1[(0, 0)] * x2t_ex1[(0, 0)]) / denom
+            } else {
+                f32::MAX
+            };
+            inliers.push(dist < threshold * threshold);
         }
-        
+
         inliers
     }
 
@@ -385,14 +531,138 @@ impl EssentialSolver {
     /// 
     /// Returns: 4 possible pose solutions
     pub fn recover_pose(&self, E: Mat3) -> [SE3; 4] {
-        // SVD: E = U * diag(1, 1, 0) * V^T
-        // Four possible solutions from the two possible rotation matrices
-        // and two possible translations
-        
-        // Simplified: return 4 identity poses
-        // In production, implement proper pose recovery
-        [SE3::identity(); 4]
+        let na_e = mat3_to_na(&E);
+        let svd = na_e.svd(true, true);
+        let mut u = svd.u.unwrap_or(Matrix3::identity());
+        let mut v_t = svd.v_t.unwrap_or(Matrix3::identity());
+
+        if u.determinant() < 0.0 {
+            u *= -1.0;
+        }
+        if v_t.determinant() < 0.0 {
+            v_t *= -1.0;
+        }
+
+        let w = Matrix3::new(
+            0.0, -1.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0,
+        );
+
+        let mut r1 = u * w * v_t;
+        let mut r2 = u * w.transpose() * v_t;
+        if r1.determinant() < 0.0 {
+            r1 = -r1;
+        }
+        if r2.determinant() < 0.0 {
+            r2 = -r2;
+        }
+        let t = u.column(2);
+        let t_vec = normalize_vec3([t[0], t[1], t[2]]);
+
+        let pose1 = SE3::from_rotation_translation(&mat3_to_array(&r1), &t_vec);
+        let pose2 = SE3::from_rotation_translation(&mat3_to_array(&r1), &negate_vec3(t_vec));
+        let pose3 = SE3::from_rotation_translation(&mat3_to_array(&r2), &t_vec);
+        let pose4 = SE3::from_rotation_translation(&mat3_to_array(&r2), &negate_vec3(t_vec));
+
+        [pose1, pose2, pose3, pose4]
     }
+}
+
+impl EssentialSolver {
+    fn compute_essential(&self, pts1: &[[f32; 2]], pts2: &[[f32; 2]]) -> Option<Mat3> {
+        let n = pts1.len().min(pts2.len());
+        if n < 8 {
+            return None;
+        }
+
+        let (norm_pts1, T1) = self.normalize_points(pts1);
+        let (norm_pts2, T2) = self.normalize_points(pts2);
+
+        let mut A = Vec::with_capacity(n);
+        for i in 0..n {
+            let x1 = &norm_pts1[i];
+            let x2 = &norm_pts2[i];
+            A.push([
+                x2[0] * x1[0], x2[0] * x1[1], x2[0],
+                x2[1] * x1[0], x2[1] * x1[1], x2[1],
+                x1[0], x1[1], 1.0,
+            ]);
+        }
+
+        let e_norm = self.solve_8point(&A)?;
+        let e_rank2 = self.enforce_rank2(e_norm);
+        let e = T2.transpose() * e_rank2 * T1;
+        Some(e)
+    }
+}
+
+struct Lcg {
+    state: u64,
+}
+
+impl Lcg {
+    fn new(seed: u64) -> Self {
+        Self { state: seed.max(1) }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (self.state >> 32) as u32
+    }
+
+    fn gen_range(&mut self, max: usize) -> usize {
+        if max == 0 {
+            return 0;
+        }
+        (self.next_u32() as usize) % max
+    }
+
+    fn sample_unique(&mut self, max: usize, count: usize) -> Vec<usize> {
+        if max == 0 || count == 0 {
+            return Vec::new();
+        }
+        let target = count.min(max);
+        let mut picked = std::collections::HashSet::with_capacity(target);
+        while picked.len() < target {
+            picked.insert(self.gen_range(max));
+        }
+        picked.into_iter().collect()
+    }
+}
+
+fn mat3_to_na(mat: &Mat3) -> Matrix3<f32> {
+    Matrix3::from_column_slice(&mat.to_cols_array())
+}
+
+fn mat3_from_na(mat: &Matrix3<f32>) -> Mat3 {
+    Mat3::from_cols_array(&[
+        mat[(0, 0)], mat[(1, 0)], mat[(2, 0)],
+        mat[(0, 1)], mat[(1, 1)], mat[(2, 1)],
+        mat[(0, 2)], mat[(1, 2)], mat[(2, 2)],
+    ])
+}
+
+fn mat3_to_array(mat: &Matrix3<f32>) -> [[f32; 3]; 3] {
+    [
+        [mat[(0, 0)], mat[(0, 1)], mat[(0, 2)]],
+        [mat[(1, 0)], mat[(1, 1)], mat[(1, 2)]],
+        [mat[(2, 0)], mat[(2, 1)], mat[(2, 2)]],
+    ]
+}
+
+fn normalize_vec3(mut v: [f32; 3]) -> [f32; 3] {
+    let norm = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if norm > 1e-8 {
+        v[0] /= norm;
+        v[1] /= norm;
+        v[2] /= norm;
+    }
+    v
+}
+
+fn negate_vec3(v: [f32; 3]) -> [f32; 3] {
+    [-v[0], -v[1], -v[2]]
 }
 
 impl Default for EssentialSolver {
@@ -475,58 +745,58 @@ impl Triangulator {
 
     /// DLT-based triangulation
     fn triangulate_dlt(&self, pose1: &SE3, pose2: &SE3, p1: [f32; 2], p2: [f32; 2]) -> Option<[f32; 3]> {
-        // Build projection matrices (simplified)
-        // P = K * [R|t] = [R|t] for normalized coordinates
-        
         let r1 = pose1.rotation_matrix();
         let t1 = pose1.translation();
         let r2 = pose2.rotation_matrix();
         let t2 = pose2.translation();
-        
-        // Cross-product matrix for translation
-        let t1_vec = Vec3::from(t1);
-        let t2_vec = Vec3::from(t2);
-        let cross1 = Mat3::from_cols(
-            Vec3::new(0.0, -t1_vec.z, t1_vec.y),
-            Vec3::new(t1_vec.z, 0.0, -t1_vec.x),
-            Vec3::new(-t1_vec.y, t1_vec.x, 0.0),
-        );
-        
-        let cross2 = Mat3::from_cols(
-            Vec3::new(0.0, -t2_vec.z, t2_vec.y),
-            Vec3::new(t2_vec.z, 0.0, -t2_vec.x),
-            Vec3::new(-t2_vec.y, t2_vec.x, 0.0),
-        );
-        
-        // Build the DLT matrix A * X = 0
-        // For two views: [x1*P1^TP1^⊥; x2*P2^TP2^⊥] * X = 0
-        
-        // Simplified: use mid-point triangulation
-        // Ray from camera 1
-        let dir1 = Vec3::new(p1[0], p1[1], 1.0).normalize();
-        let ray1_origin = Vec3::from(t1);
-        let ray1_dir = Vec3::new(r1[0][0]*dir1.x + r1[1][0]*dir1.y + r1[2][0]*dir1.z,
-                                  r1[0][1]*dir1.x + r1[1][1]*dir1.y + r1[2][1]*dir1.z,
-                                  r1[0][2]*dir1.x + r1[1][2]*dir1.y + r1[2][2]*dir1.z);
-        
-        // Ray from camera 2  
-        let dir2 = Vec3::new(p2[0], p2[1], 1.0).normalize();
-        let ray2_origin = Vec3::from(t2);
-        let ray2_dir = Vec3::new(r2[0][0]*dir2.x + r2[1][0]*dir2.y + r2[2][0]*dir2.z,
-                                  r2[0][1]*dir2.x + r2[1][1]*dir2.y + r2[2][1]*dir2.z,
-                                  r2[0][2]*dir2.x + r2[1][2]*dir2.y + r2[2][2]*dir2.z);
-        
-        // Mid-point triangulation
-        // Find closest point between two rays
-        let cross_ray = ray1_dir.cross(ray2_dir);
-        if cross_ray.length_squared() < 1e-6 {
-            return None;  // Rays are parallel
+
+        let p1m = [
+            [r1[0][0], r1[0][1], r1[0][2], t1[0]],
+            [r1[1][0], r1[1][1], r1[1][2], t1[1]],
+            [r1[2][0], r1[2][1], r1[2][2], t1[2]],
+        ];
+        let p2m = [
+            [r2[0][0], r2[0][1], r2[0][2], t2[0]],
+            [r2[1][0], r2[1][1], r2[1][2], t2[1]],
+            [r2[2][0], r2[2][1], r2[2][2], t2[2]],
+        ];
+
+        let mut a_data = Vec::with_capacity(16);
+        a_data.extend_from_slice(&[
+            p1[0] * p1m[2][0] - p1m[0][0],
+            p1[0] * p1m[2][1] - p1m[0][1],
+            p1[0] * p1m[2][2] - p1m[0][2],
+            p1[0] * p1m[2][3] - p1m[0][3],
+        ]);
+        a_data.extend_from_slice(&[
+            p1[1] * p1m[2][0] - p1m[1][0],
+            p1[1] * p1m[2][1] - p1m[1][1],
+            p1[1] * p1m[2][2] - p1m[1][2],
+            p1[1] * p1m[2][3] - p1m[1][3],
+        ]);
+        a_data.extend_from_slice(&[
+            p2[0] * p2m[2][0] - p2m[0][0],
+            p2[0] * p2m[2][1] - p2m[0][1],
+            p2[0] * p2m[2][2] - p2m[0][2],
+            p2[0] * p2m[2][3] - p2m[0][3],
+        ]);
+        a_data.extend_from_slice(&[
+            p2[1] * p2m[2][0] - p2m[1][0],
+            p2[1] * p2m[2][1] - p2m[1][1],
+            p2[1] * p2m[2][2] - p2m[1][2],
+            p2[1] * p2m[2][3] - p2m[1][3],
+        ]);
+
+        let a = DMatrix::<f32>::from_row_slice(4, 4, &a_data);
+        let svd = a.svd(true, true);
+        let v_t = svd.v_t?;
+        let x = v_t.row(v_t.nrows() - 1);
+        let w = x[3];
+        if w.abs() < 1e-8 {
+            return None;
         }
-        
-        let t = (ray2_origin - ray1_origin).cross(ray2_dir).dot(cross_ray) / cross_ray.length_squared();
-        let mid_point = ray1_origin + ray1_dir * t;
-        
-        Some([mid_point.x, mid_point.y, mid_point.z])
+
+        Some([x[0] / w, x[1] / w, x[2] / w])
     }
 
     /// Check if a point is observable from a camera pose
@@ -564,33 +834,35 @@ impl Sim3Solver {
     }
 
     /// Compute Sim3 transform between two sets of 3D points
-    /// 
+    ///
+    /// Uses the Umeyama algorithm (SVD-based) to compute rotation, scale, and translation.
     /// Returns: (sim3_transform, inliers)
-    /// sim3: (scale, translation, rotation) 
+    /// sim3: (scale, translation, rotation)
     pub fn compute(&self, pts1: &[[f32; 3]], pts2: &[[f32; 3]]) -> Option<((f32, [f32; 3], Mat3), Vec<bool>)> {
         if pts1.len() < 3 || pts2.len() < 3 {
             return None;
         }
 
         let n = pts1.len().min(pts2.len());
-        
+
         // Compute centroids
         let c1 = self.compute_centroid(pts1);
         let c2 = self.compute_centroid(pts2);
-        
+
         // Compute scale
         let scale = self.compute_scale(pts1, c1, pts2, c2);
-        
-        // Compute rotation using SVD (simplified)
-        let rotation = Mat3::IDENTITY;
-        
-        // Compute translation
+
+        // Compute rotation using SVD (Umeyama algorithm)
+        let rotation = self.compute_rotation(pts1, c1, pts2, c2, n);
+
+        // Compute translation: t = c2 - s * R * c1
+        let rc1 = rotation * (Vec3::from(c1) * scale);
         let translation = [
-            c2[0] - scale * (rotation.col(0)[0] * c1[0] + rotation.col(1)[0] * c1[1] + rotation.col(2)[0] * c1[2]),
-            c2[1] - scale * (rotation.col(0)[1] * c1[0] + rotation.col(1)[1] * c1[1] + rotation.col(2)[1] * c1[2]),
-            c2[2] - scale * (rotation.col(0)[2] * c1[0] + rotation.col(1)[2] * c1[1] + rotation.col(2)[2] * c1[2]),
+            c2[0] - rc1.x,
+            c2[1] - rc1.y,
+            c2[2] - rc1.z,
         ];
-        
+
         // Compute inliers
         let mut inliers = vec![false; n];
         for i in 0..n {
@@ -600,8 +872,45 @@ impl Sim3Solver {
                 inliers[i] = true;
             }
         }
-        
+
         Some(((scale, translation, rotation), inliers))
+    }
+
+    /// Compute rotation between two centered point sets using SVD
+    fn compute_rotation(&self, pts1: &[[f32; 3]], c1: [f32; 3], pts2: &[[f32; 3]], c2: [f32; 3], n: usize) -> Mat3 {
+        // Build cross-covariance matrix H = sum(q2_i * q1_i^T)
+        // where q1 = pts1 - c1, q2 = pts2 - c2
+        let mut h = Matrix3::<f32>::zeros();
+
+        for i in 0..n {
+            let q1 = NaVec3::new(
+                pts1[i][0] - c1[0],
+                pts1[i][1] - c1[1],
+                pts1[i][2] - c1[2],
+            );
+            let q2 = NaVec3::new(
+                pts2[i][0] - c2[0],
+                pts2[i][1] - c2[1],
+                pts2[i][2] - c2[2],
+            );
+
+            // H += q2 * q1^T
+            h += q2 * q1.transpose();
+        }
+
+        // SVD: H = U * S * V^T
+        let svd = h.svd(true, true);
+        let u = svd.u.unwrap_or(Matrix3::identity());
+        let v_t = svd.v_t.unwrap_or(Matrix3::identity());
+
+        // R = U * diag(1, 1, det(U*V^T)) * V^T
+        // This ensures det(R) = +1 (proper rotation)
+        let d = (u * v_t).determinant();
+        let sign = if d < 0.0 { -1.0 } else { 1.0 };
+        let correction = Matrix3::from_diagonal(&NaVec3::new(1.0, 1.0, sign));
+        let r = u * correction * v_t;
+
+        mat3_from_na(&r)
     }
 
     /// Compute centroid of points

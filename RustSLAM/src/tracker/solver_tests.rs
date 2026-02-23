@@ -39,21 +39,23 @@ mod tests {
     #[test]
     fn test_pnp_solve_simple() {
         let solver = PnPSolver::new(500.0, 500.0, 320.0, 240.0);
-        
+
         let mut problem = PnPProblem::new();
-        // Add 4 known 3D-2D correspondences
-        // 3D points at z=1 plane
-        problem.add_correspondence([320.0, 240.0], [0.0, 0.0, 1.0]);      // (0, 0, 1) -> (320, 240)
-        problem.add_correspondence([520.0, 240.0], [1.0, 0.0, 1.0]);      // (1, 0, 1) -> (520, 240)
-        problem.add_correspondence([320.0, 440.0], [0.0, 1.0, 1.0]);      // (0, 1, 1) -> (320, 440)
-        problem.add_correspondence([520.0, 440.0], [1.0, 1.0, 1.0]);      // (1, 1, 1) -> (520, 440)
-        
+        // 6 non-coplanar 3D points with correct projections for identity pose
+        // u = fx * X/Z + cx, v = fy * Y/Z + cy
+        problem.add_correspondence([320.0, 240.0], [0.0, 0.0, 5.0]);
+        problem.add_correspondence([420.0, 240.0], [1.0, 0.0, 5.0]);
+        problem.add_correspondence([320.0, 340.0], [0.0, 1.0, 5.0]);
+        problem.add_correspondence([445.0, 365.0], [1.0, 1.0, 4.0]);
+        problem.add_correspondence([236.67, 156.67], [-1.0, -1.0, 6.0]);
+        problem.add_correspondence([403.33, 156.67], [0.5, -0.5, 3.0]);
+
         let result = solver.solve(&problem);
-        
-        // Should return a valid pose (not identity for non-planar case)
+
+        // Should return a valid pose for consistent correspondences
         assert!(result.is_some());
         let (_pose, inliers) = result.unwrap();
-        
+
         // Check that we have inliers
         assert!(!inliers.is_empty());
     }
@@ -159,26 +161,28 @@ mod tests {
     #[test]
     fn test_triangulate_multiple_points() {
         let tri = Triangulator::new();
-        
+
         let pose1 = SE3::identity();
-        let pose2 = SE3::from_axis_angle(&[0.0, 0.0, 0.0], &[0.5, 0.0, 0.0]);
-        
+        let pose2 = SE3::from_axis_angle(&[0.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
+
+        // Points at z=4 in world coordinates.
+        // View 1 (P=[I|0]): project (x,y,z) → (x/z, y/z)
+        // View 2 (P=[I|1,0,0]): project (x,y,z) → ((x+1)/z, y/z)
         let pts1: Vec<[f32; 2]> = vec![
-            [320.0, 240.0],
-            [420.0, 240.0],
-            [320.0, 340.0],
+            [0.0, 0.0],       // world (0, 0, 4)
+            [0.3, 0.1],       // world (1.2, 0.4, 4)
+            [-0.2, 0.15],     // world (-0.8, 0.6, 4)
         ];
         let pts2: Vec<[f32; 2]> = vec![
-            [270.0, 240.0],
-            [370.0, 240.0],
-            [270.0, 340.0],
+            [0.25, 0.0],      // (0+1)/4 = 0.25
+            [0.55, 0.1],      // (1.2+1)/4 = 0.55
+            [0.05, 0.15],     // (-0.8+1)/4 = 0.05
         ];
-        
+
         let results = tri.triangulate(&pose1, &pose2, &pts1, &pts2);
-        
-        // All points should be triangulated
+
         let valid_count = results.iter().filter(|p| p.is_some()).count();
-        assert!(valid_count > 0, "Should have at least some valid triangulated points");
+        assert!(valid_count > 0, "Should have at least some valid triangulated points, got results: {:?}", results);
     }
 
     #[test]

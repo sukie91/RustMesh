@@ -249,7 +249,7 @@ impl VisualOdometry {
         if let Some((E, inliers)) = self.essential_solver.compute(&matches, &pts1, &pts2) {
             let inlier_count = inliers.iter().filter(|&&x| x).count();
             
-            if inlier_count >= self.min_inliers || matches.len() >= self.min_matches {
+            if inlier_count >= self.min_inliers && matches.len() >= self.min_matches {
                 // Recover pose from essential matrix
                 let poses = self.essential_solver.recover_pose(E);
                 let prev_pose = SE3::identity();

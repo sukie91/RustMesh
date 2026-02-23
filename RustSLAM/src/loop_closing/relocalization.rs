@@ -277,10 +277,20 @@ mod tests {
         let reloc = Relocalizer::new(500.0, 500.0, 320.0, 240.0);
         let mut map = Map::new();
 
-        // Add 3D map points
-        for i in 0..8u64 {
-            let pos = Vec3::new(i as f32 * 0.5 - 2.0, (i as f32 * 0.3).sin(), 3.0 + i as f32 * 0.1);
-            let mp = MapPoint::new(i, pos, 1);
+        // 8 non-coplanar 3D points with correct projections for identity pose
+        // u = fx * X/Z + cx, v = fy * Y/Z + cy  (fx=fy=500, cx=320, cy=240)
+        let positions = [
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::new(0.5, 0.0, 5.0),
+            Vec3::new(0.0, 0.5, 5.0),
+            Vec3::new(0.5, 0.5, 4.0),
+            Vec3::new(-0.3, -0.3, 6.0),
+            Vec3::new(0.3, -0.2, 3.0),
+            Vec3::new(-0.2, 0.4, 4.0),
+            Vec3::new(0.4, 0.3, 5.0),
+        ];
+        for (i, pos) in positions.iter().enumerate() {
+            let mp = MapPoint::new(i as u64, *pos, 1);
             map.add_point(mp);
         }
 
@@ -288,7 +298,6 @@ mod tests {
         let mut features = FrameFeatures::new();
         for i in 0..8 {
             features.keypoints.push([250.0 + i as f32 * 20.0, 240.0 + i as f32 * 10.0]);
-            // Each descriptor is a unique pattern
             let mut desc = vec![0u8; ORB_DESCRIPTOR_SIZE];
             desc[0] = i as u8;
             desc[1] = (i * 7) as u8;
@@ -300,13 +309,13 @@ mod tests {
         frame.set_pose(SE3::identity());
         let kf = KeyFrame::new(frame, features.clone());
 
-        // Current frame: same descriptors (should match perfectly)
-        let current_kps: Vec<[f32; 2]> = (0..8)
-            .map(|i| [260.0 + i as f32 * 20.0, 245.0 + i as f32 * 10.0])
-            .collect();
+        // Current frame: correct projections of the 3D points (identity pose)
+        let current_kps: Vec<[f32; 2]> = positions.iter().map(|p| {
+            [500.0 * p.x / p.z + 320.0, 500.0 * p.y / p.z + 240.0]
+        }).collect();
 
         let result = reloc.try_pnp(&kf, &features.descriptors, &current_kps, &map);
-        // Should find correspondences and attempt PnP
+        // Should find correspondences and solve PnP successfully
         assert!(result.is_some());
     }
 
