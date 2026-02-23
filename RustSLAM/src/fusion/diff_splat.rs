@@ -898,12 +898,6 @@ mod tests {
     #[test]
     fn test_trainable_gaussians() {
         let device = Device::new_metal(0).unwrap_or_else(|_| Device::Cpu);
-        
-        // Skip if no GPU
-        if !matches!(device, Device::Metal(_)) {
-            return;
-        }
-        
         let gaussians = TrainableGaussians::new(
             &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             &[-2.0, -2.0, -2.0, -2.0, -2.0, -2.0],
@@ -912,7 +906,6 @@ mod tests {
             &[1.0, 0.5, 0.25, 0.5, 1.0, 0.25],
             &device,
         );
-        
         if let Ok(g) = gaussians {
             assert_eq!(g.len(), 2);
         }
@@ -995,6 +988,156 @@ mod tests {
         let has_depth = depth.iter().flatten().any(|&v| v > 0.01);
         assert!(has_color, "Tiled parallel render should produce non-zero color");
         assert!(has_depth, "Tiled parallel render should produce non-zero depth");
+    }
+
+    #[test]
+    fn test_render_640x480_resolution() {
+        let device = Device::Cpu;
+        let renderer = DiffSplatRenderer::with_device(640, 480, device.clone());
+
+        // 5 Gaussians spread across the field of view
+        let gaussians = TrainableGaussians::new(
+            &[
+                0.0, 0.0, 3.0,    // center
+                -1.0, -0.8, 4.0,  // upper-left
+                1.0, -0.8, 4.0,   // upper-right
+                -1.0, 0.8, 4.0,   // lower-left
+                1.0, 0.8, 4.0,    // lower-right
+            ],
+            &[-1.5; 15],
+            &[1.0, 0.0, 0.0, 0.0,
+              1.0, 0.0, 0.0, 0.0,
+              1.0, 0.0, 0.0, 0.0,
+              1.0, 0.0, 0.0, 0.0,
+              1.0, 0.0, 0.0, 0.0],
+            &[0.8, 0.7, 0.9, 0.6, 0.8],
+            &[1.0, 0.0, 0.0,
+              0.0, 1.0, 0.0,
+              0.0, 0.0, 1.0,
+              1.0, 1.0, 0.0,
+              0.0, 1.0, 1.0],
+            &device,
+        )
+        .unwrap();
+
+        let camera = DiffCamera::new(
+            500.0, 500.0, 320.0, 240.0, 640, 480,
+            &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            &[0.0, 0.0, 0.0],
+            &device,
+        )
+        .unwrap();
+
+        let output = renderer.render(&gaussians, &camera).unwrap();
+        let color_dims = output.color.dims();
+        let depth_dims = output.depth.dims();
+
+        assert_eq!(color_dims, &[480, 640, 3], "Color output must be [480, 640, 3]");
+        assert_eq!(depth_dims, &[480, 640], "Depth output must be [480, 640]");
+
+        let color = output.color.to_vec3::<f32>().unwrap();
+        let depth = output.depth.to_vec2::<f32>().unwrap();
+        let has_color = color.iter().flatten().flatten().any(|&v| v > 0.01);
+        let has_depth = depth.iter().flatten().any(|&v| v > 0.01);
+        assert!(has_color, "640x480 render should produce visible color");
+        assert!(has_depth, "640x480 render should produce visible depth");
+    }
+
+    #[test]
+    fn test_render_1920x1080_resolution() {
+        let device = Device::Cpu;
+        let renderer = DiffSplatRenderer::with_device(1920, 1080, device.clone());
+
+        // 3 Gaussians — keep count low for CPU test speed
+        let gaussians = TrainableGaussians::new(
+            &[0.0, 0.0, 3.0, -2.0, 1.5, 5.0, 2.0, -1.5, 5.0],
+            &[-1.5; 9],
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            &[0.8, 0.7, 0.9],
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            &device,
+        )
+        .unwrap();
+
+        let camera = DiffCamera::new(
+            1000.0, 1000.0, 960.0, 540.0, 1920, 1080,
+            &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            &[0.0, 0.0, 0.0],
+            &device,
+        )
+        .unwrap();
+
+        let output = renderer.render(&gaussians, &camera).unwrap();
+        let color_dims = output.color.dims();
+        let depth_dims = output.depth.dims();
+
+        assert_eq!(color_dims, &[1080, 1920, 3], "Color output must be [1080, 1920, 3]");
+        assert_eq!(depth_dims, &[1080, 1920], "Depth output must be [1080, 1920]");
+
+        let color = output.color.to_vec3::<f32>().unwrap();
+        let depth = output.depth.to_vec2::<f32>().unwrap();
+        let has_color = color.iter().flatten().flatten().any(|&v| v > 0.01);
+        let has_depth = depth.iter().flatten().any(|&v| v > 0.01);
+        assert!(has_color, "1920x1080 render should produce visible color");
+        assert!(has_depth, "1920x1080 render should produce visible depth");
+    }
+
+    /// Performance benchmark: renders at target resolutions with realistic Gaussian counts.
+    /// Measures timing and asserts < 50ms on Metal GPU.
+    /// Run: cargo test --release --lib test_benchmark_performance -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_benchmark_performance() {
+        let device = Device::new_metal(0).unwrap_or_else(|_| Device::Cpu);
+        let is_gpu = matches!(device, Device::Metal(_));
+        println!("Device: {:?} (GPU: {})", device, is_gpu);
+
+        for &(n, w, h) in &[(10000, 640, 480), (10000, 1920, 1080), (100000, 1920, 1080)] {
+            let renderer = DiffSplatRenderer::with_device(w, h, device.clone());
+
+            let mut rng_state: u64 = 42;
+            let mut rand_f32 = |lo: f32, hi: f32| -> f32 {
+                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let t = ((rng_state >> 33) as f32) / (u32::MAX as f32);
+                lo + t * (hi - lo)
+            };
+
+            let mut positions = Vec::with_capacity(n * 3);
+            let mut scales = Vec::with_capacity(n * 3);
+            let mut rotations = Vec::with_capacity(n * 4);
+            let mut opacities = Vec::with_capacity(n);
+            let mut colors = Vec::with_capacity(n * 3);
+
+            for _ in 0..n {
+                positions.extend_from_slice(&[rand_f32(-1.0, 1.0), rand_f32(-0.8, 0.8), rand_f32(2.0, 6.0)]);
+                scales.extend_from_slice(&[-3.5, -3.5, -3.5]);
+                rotations.extend_from_slice(&[1.0, 0.0, 0.0, 0.0]);
+                opacities.push(rand_f32(0.3, 0.9));
+                colors.extend_from_slice(&[rand_f32(0.0, 1.0), rand_f32(0.0, 1.0), rand_f32(0.0, 1.0)]);
+            }
+
+            let gaussians = TrainableGaussians::new(
+                &positions, &scales, &rotations, &opacities, &colors, &device,
+            ).unwrap();
+
+            let camera = DiffCamera::new(
+                500.0, 500.0, (w as f32) / 2.0, (h as f32) / 2.0, w, h,
+                &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                &[0.0, 0.0, 0.0],
+                &device,
+            ).unwrap();
+
+            let start = std::time::Instant::now();
+            let _ = renderer.render(&gaussians, &camera).unwrap();
+            let elapsed = start.elapsed();
+            println!("Metal {}x{} @ {} Gaussians: {:.0}ms", w, h, n, elapsed.as_secs_f64() * 1000.0);
+
+            if is_gpu && n <= 10000 {
+                assert!(elapsed.as_millis() < 50,
+                    "GPU render {}x{} @ {}K must be < 50ms, got {}ms",
+                    w, h, n / 1000, elapsed.as_millis());
+            }
+        }
     }
 
     #[test]
