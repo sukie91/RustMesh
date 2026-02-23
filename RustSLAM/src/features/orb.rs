@@ -5,6 +5,8 @@
 //! For now, this provides a placeholder that can be replaced with actual implementation.
 
 use crate::features::base::{FeatureExtractor, FeatureError, KeyPoint, Descriptors};
+use crate::features::pure_rust::{FastDetector, FastParams, HarrisDetector, HarrisParams};
+use crate::features::utils::{build_brief_descriptors, filter_by_response, select_keypoints_grid, to_grayscale};
 
 /// ORB (Oriented FAST and Rotated BRIEF) feature extractor
 /// 
@@ -116,25 +118,80 @@ impl Default for OrbExtractor {
 impl FeatureExtractor for OrbExtractor {
     fn detect_and_compute(
         &mut self,
-        _image: &[u8],
-        _width: u32,
-        _height: u32,
+        image: &[u8],
+        width: u32,
+        height: u32,
     ) -> Result<(Vec<KeyPoint>, Descriptors), FeatureError> {
-        // Without OpenCV, return empty results
-        // In production, this would call opencv-rust
-        Ok((
-            Vec::new(),
-            Descriptors::new(),
-        ))
+        #[cfg(feature = "opencv")]
+        {
+            return self.detect_and_compute_opencv(image, width as i32, height as i32);
+        }
+
+        let keypoints = self.detect(image, width, height)?;
+        let gray = to_grayscale(image, width, height);
+        let descriptors = build_brief_descriptors(&gray, width, height, &keypoints);
+        Ok((keypoints, descriptors))
     }
 
     fn detect(
         &mut self,
-        _image: &[u8],
-        _width: u32,
-        _height: u32,
+        image: &[u8],
+        width: u32,
+        height: u32,
     ) -> Result<Vec<KeyPoint>, FeatureError> {
-        Ok(Vec::new())
+        #[cfg(feature = "opencv")]
+        {
+            let (kps, _desc) = self.detect_and_compute_opencv(image, width as i32, height as i32)?;
+            return Ok(kps);
+        }
+
+        let gray = to_grayscale(image, width, height);
+        if gray.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let detector = FastDetector::new(FastParams::default());
+        let mut keypoints: Vec<KeyPoint> = detector
+            .detect(&gray, width, height)
+            .into_iter()
+            .map(|kp| {
+                let mut base = KeyPoint::new(kp.x, kp.y);
+                base.response = kp.response.abs();
+                base
+            })
+            .collect();
+
+        if keypoints.is_empty() {
+            let harris = HarrisDetector::new(HarrisParams::default());
+            keypoints = harris
+                .detect(&gray, width, height)
+                .into_iter()
+                .map(|kp| {
+                    let mut base = KeyPoint::new(kp.x, kp.y);
+                    base.response = kp.response.abs();
+                    base
+                })
+                .collect();
+        }
+
+        if keypoints.is_empty() {
+            return Ok(keypoints);
+        }
+
+        let max_response = keypoints
+            .iter()
+            .map(|kp| kp.response)
+            .fold(0.0f32, f32::max);
+        let threshold = max_response * 0.01;
+        let filtered = filter_by_response(keypoints, threshold);
+        let mut selected = select_keypoints_grid(filtered, width, height, self.num_features, 4, 4);
+        let half_patch = (self.patch_size.max(3) / 2) as i32;
+        for kp in &mut selected {
+            kp.angle = compute_intensity_centroid_angle(&gray, width, height, kp.x(), kp.y(), half_patch);
+            kp.size = self.patch_size as f32;
+        }
+
+        Ok(selected)
     }
 
     fn num_features(&self) -> usize {
@@ -143,6 +200,46 @@ impl FeatureExtractor for OrbExtractor {
 
     fn set_num_features(&mut self, num: usize) {
         self.num_features = num;
+    }
+}
+
+fn compute_intensity_centroid_angle(
+    gray: &[u8],
+    width: u32,
+    height: u32,
+    x: f32,
+    y: f32,
+    half_patch: i32,
+) -> f32 {
+    let cx = x.round() as i32;
+    let cy = y.round() as i32;
+    let w = width as i32;
+    let h = height as i32;
+
+    let mut m10 = 0.0f32;
+    let mut m01 = 0.0f32;
+
+    for dy in -half_patch..=half_patch {
+        for dx in -half_patch..=half_patch {
+            if dx * dx + dy * dy > half_patch * half_patch {
+                continue;
+            }
+            let px = cx + dx;
+            let py = cy + dy;
+            if px < 0 || py < 0 || px >= w || py >= h {
+                continue;
+            }
+            let idx = (py * w + px) as usize;
+            let intensity = gray.get(idx).copied().unwrap_or(0) as f32;
+            m10 += dx as f32 * intensity;
+            m01 += dy as f32 * intensity;
+        }
+    }
+
+    if m10.abs() < 1e-6 && m01.abs() < 1e-6 {
+        0.0
+    } else {
+        m01.atan2(m10)
     }
 }
 
@@ -213,7 +310,7 @@ mod opencv_impl {
             let descriptor_size = if !descriptors.empty() {
                 descriptors.elem_size() as usize
             } else {
-                32  // ORB uses 32 bytes
+                crate::features::base::ORB_DESCRIPTOR_SIZE
             };
 
             if !descriptors.data().is_empty() {
@@ -244,6 +341,20 @@ mod opencv_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::base::ORB_DESCRIPTOR_SIZE;
+
+    fn checkerboard(width: u32, height: u32, block: u32) -> Vec<u8> {
+        let mut img = vec![0u8; (width * height) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let bx = (x / block) % 2;
+                let by = (y / block) % 2;
+                let v = if (bx ^ by) == 0 { 30 } else { 220 };
+                img[(y * width + x) as usize] = v;
+            }
+        }
+        img
+    }
 
     #[test]
     fn test_orb_creation() {
@@ -285,5 +396,45 @@ mod tests {
         assert_eq!(first, 1);
         assert_eq!(wta, 3);
         assert_eq!(patch, 25);
+    }
+
+    #[test]
+    #[cfg(not(feature = "opencv"))]
+    fn test_orb_fallback_extracts_and_distributes_keypoints() {
+        let img = checkerboard(128, 128, 8);
+        let mut extractor = OrbExtractor::new(2000);
+        let (kps, desc) = extractor.detect_and_compute(&img, 128, 128).unwrap();
+        assert!(!kps.is_empty());
+        assert_eq!(desc.count, kps.len());
+        assert_eq!(desc.size, ORB_DESCRIPTOR_SIZE);
+        assert!(kps.len() <= 2000);
+
+        let mut cells = std::collections::HashSet::new();
+        let cell_w = 128.0 / 4.0;
+        let cell_h = 128.0 / 4.0;
+        for kp in &kps {
+            let col = (kp.x() / cell_w).floor() as i32;
+            let row = (kp.y() / cell_h).floor() as i32;
+            cells.insert((row, col));
+        }
+        assert!(cells.len() >= 4, "expected keypoints in multiple grid cells");
+    }
+
+    #[test]
+    fn test_intensity_centroid_angle_points_to_bright_side() {
+        let width = 31u32;
+        let height = 31u32;
+        let mut img = vec![20u8; (width * height) as usize];
+
+        // Right half brighter than left half -> dominant moment on +x.
+        for y in 0..height as usize {
+            for x in (width as usize / 2)..width as usize {
+                img[y * width as usize + x] = 220;
+            }
+        }
+
+        let angle = compute_intensity_centroid_angle(&img, width, height, 15.0, 15.0, 15);
+        assert!(angle.is_finite());
+        assert!(angle.abs() < 0.6, "angle should roughly point to +x, got {angle}");
     }
 }

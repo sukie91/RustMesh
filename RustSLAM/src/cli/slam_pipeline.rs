@@ -6,15 +6,30 @@ use crate::features::{
     Descriptors, FeatureExtractor, HarrisDetector, HarrisParams, Match, OrbExtractor, FastDetector,
     FastParams, KnnMatcher,
 };
-use crate::features::base::FeatureError;
+use crate::features::base::{FeatureError, ORB_DESCRIPTOR_SIZE};
 
-const PATCH_DESCRIPTOR_SIZE: usize = 32;
-const PATCH_OFFSETS: [(i32, i32); PATCH_DESCRIPTOR_SIZE] = [
-    (-6, -6), (-4, -6), (-2, -6), (0, -6), (2, -6), (4, -6), (6, -6), (8, -6),
-    (-6, -2), (-4, -2), (-2, -2), (0, -2), (2, -2), (4, -2), (6, -2), (8, -2),
-    (-6, 2), (-4, 2), (-2, 2), (0, 2), (2, 2), (4, 2), (6, 2), (8, 2),
-    (-6, 6), (-4, 6), (-2, 6), (0, 6), (2, 6), (4, 6), (6, 6), (8, 6),
-];
+/// 256 pre-computed BRIEF point pairs `(x1, y1, x2, y2)` within a 31×31 patch.
+const NUM_BRIEF_TESTS: usize = 256;
+const BRIEF_PAIRS: [(i8, i8, i8, i8); NUM_BRIEF_TESTS] = generate_brief_pairs();
+
+const fn generate_brief_pairs() -> [(i8, i8, i8, i8); NUM_BRIEF_TESTS] {
+    let mut pairs = [(0i8, 0i8, 0i8, 0i8); NUM_BRIEF_TESTS];
+    let mut state: u32 = 0x12345678;
+    let mut i = 0;
+    while i < NUM_BRIEF_TESTS {
+        state = state.wrapping_mul(1103515245).wrapping_add(12345);
+        let x1 = ((state >> 16) % 31) as i8 - 15;
+        state = state.wrapping_mul(1103515245).wrapping_add(12345);
+        let y1 = ((state >> 16) % 31) as i8 - 15;
+        state = state.wrapping_mul(1103515245).wrapping_add(12345);
+        let x2 = ((state >> 16) % 31) as i8 - 15;
+        state = state.wrapping_mul(1103515245).wrapping_add(12345);
+        let y2 = ((state >> 16) % 31) as i8 - 15;
+        pairs[i] = (x1, y1, x2, y2);
+        i += 1;
+    }
+    pairs
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureType {
@@ -203,40 +218,47 @@ fn build_patch_descriptors(
     height: u32,
     keypoints: &[crate::features::pure_rust::KeyPoint],
 ) -> Descriptors {
-    let mut descriptors = Descriptors::with_capacity(keypoints.len(), PATCH_DESCRIPTOR_SIZE);
+    let mut descriptors = Descriptors::with_capacity(keypoints.len(), ORB_DESCRIPTOR_SIZE);
     if keypoints.is_empty() || gray.is_empty() {
         return descriptors;
     }
     let w = width as i32;
     let h = height as i32;
-    let mut data = Vec::with_capacity(keypoints.len() * PATCH_DESCRIPTOR_SIZE);
-    for kp in keypoints {
-        let x = kp.x.round() as i32;
-        let y = kp.y.round() as i32;
-        for (dx, dy) in PATCH_OFFSETS {
-            let px = x + dx;
-            let py = y + dy;
-            let intensity = if px >= 0 && px < w && py >= 0 && py < h {
-                let idx = (py as usize) * (w as usize) + (px as usize);
-                gray.get(idx).copied().unwrap_or(0)
-            } else {
-                0
-            };
-            data.push(intensity);
+    for (kp_idx, kp) in keypoints.iter().enumerate() {
+        let cx = kp.x.round() as i32;
+        let cy = kp.y.round() as i32;
+        let use_rot = kp.angle.is_finite() && kp.angle >= 0.0;
+        let (sin_a, cos_a) = if use_rot { kp.angle.sin_cos() } else { (0.0f32, 1.0f32) };
+        let base = kp_idx * ORB_DESCRIPTOR_SIZE;
+        for (i, &(x1, y1, x2, y2)) in BRIEF_PAIRS.iter().enumerate() {
+            let (rx1, ry1) = if use_rot {
+                ((x1 as f32 * cos_a - y1 as f32 * sin_a).round() as i32,
+                 (x1 as f32 * sin_a + y1 as f32 * cos_a).round() as i32)
+            } else { (x1 as i32, y1 as i32) };
+            let (rx2, ry2) = if use_rot {
+                ((x2 as f32 * cos_a - y2 as f32 * sin_a).round() as i32,
+                 (x2 as f32 * sin_a + y2 as f32 * cos_a).round() as i32)
+            } else { (x2 as i32, y2 as i32) };
+            let i1 = if cx+rx1 >= 0 && cx+rx1 < w && cy+ry1 >= 0 && cy+ry1 < h {
+                gray[((cy+ry1)*w + (cx+rx1)) as usize]
+            } else { 0 };
+            let i2 = if cx+rx2 >= 0 && cx+rx2 < w && cy+ry2 >= 0 && cy+ry2 < h {
+                gray[((cy+ry2)*w + (cx+rx2)) as usize]
+            } else { 0 };
+            if i1 > i2 {
+                descriptors.data[base + i / 8] |= 1 << (i % 8);
+            }
         }
     }
-    descriptors.data = data;
-    descriptors.size = PATCH_DESCRIPTOR_SIZE;
-    descriptors.count = keypoints.len();
     descriptors
 }
 
-fn descriptors_to_arrays(descriptors: &Descriptors) -> Vec<[f64; PATCH_DESCRIPTOR_SIZE]> {
+fn descriptors_to_arrays(descriptors: &Descriptors) -> Vec<[f64; ORB_DESCRIPTOR_SIZE]> {
     descriptors
         .data
-        .chunks(PATCH_DESCRIPTOR_SIZE)
+        .chunks(ORB_DESCRIPTOR_SIZE)
         .map(|chunk| {
-            let mut arr = [0.0; PATCH_DESCRIPTOR_SIZE];
+            let mut arr = [0.0; ORB_DESCRIPTOR_SIZE];
             for (i, &byte) in chunk.iter().enumerate() {
                 arr[i] = byte as f64;
             }

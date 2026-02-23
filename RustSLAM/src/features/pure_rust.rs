@@ -2,7 +2,8 @@
 //! 
 //! Implements Harris corner detection and FAST detector in pure Rust.
 
-use glam::Vec3;
+use crate::features::base::{Descriptors, FeatureError, FeatureExtractor, KeyPoint as BaseKeyPoint};
+use crate::features::utils::{build_brief_descriptors, filter_by_response, select_keypoints_grid, to_grayscale};
 
 /// A detected keypoint
 #[derive(Debug, Clone, Copy)]
@@ -90,29 +91,29 @@ impl HarrisDetector {
         let w = width as usize;
         let h = height as usize;
         
-        if image.len() != w * h {
+        if image.len() != w * h || w < 3 || h < 3 {
             return Vec::new();
         }
 
         // Compute gradients
-        let mut Ix = vec![0i32; w * h];
-        let mut Iy = vec![0i32; w * h];
+        let mut ix = vec![0i32; w * h];
+        let mut iy = vec![0i32; w * h];
         
-        self.compute_gradients(image, width, height, &mut Ix, &mut Iy);
+        self.compute_gradients(image, width, height, &mut ix, &mut iy);
 
         // Compute Ixx, Iyy, Ixy
-        let mut Ixx = vec![0i64; w * h];
-        let mut Iyy = vec![0i64; w * h];
-        let mut Ixy = vec![0i64; w * h];
+        let mut ixx = vec![0i64; w * h];
+        let mut iyy = vec![0i64; w * h];
+        let mut ixy = vec![0i64; w * h];
         
         for i in 1..(h - 1) {
             for j in 1..(w - 1) {
                 let idx = i * w + j;
-                let ix = Ix[idx] as i64;
-                let iy = Iy[idx] as i64;
-                Ixx[idx] = ix * ix;
-                Iyy[idx] = iy * iy;
-                Ixy[idx] = ix * iy;
+                let gx = ix[idx] as i64;
+                let gy = iy[idx] as i64;
+                ixx[idx] = gx * gx;
+                iyy[idx] = gy * gy;
+                ixy[idx] = gx * gy;
             }
         }
 
@@ -120,26 +121,29 @@ impl HarrisDetector {
         let mut response = vec![0.0f32; w * h];
         let kernel_size = 5isize;
         let half_k = kernel_size / 2;
+        let gaussian = Kernels::gaussian(kernel_size as usize, 1.2);
         
         for i in half_k..(h as isize - half_k) {
             for j in half_k..(w as isize - half_k) {
-                let mut sum_ixx = 0i64;
-                let mut sum_iyy = 0i64;
-                let mut sum_ixy = 0i64;
+                let mut sum_ixx = 0.0f32;
+                let mut sum_iyy = 0.0f32;
+                let mut sum_ixy = 0.0f32;
                 
-                // Simple box filter (faster than Gaussian)
+                // Gaussian-weighted second moment matrix improves Harris stability.
                 for di in -half_k..=half_k {
                     for dj in -half_k..=half_k {
                         let idx = ((i + di) * w as isize + (j + dj)) as usize;
-                        sum_ixx += Ixx[idx];
-                        sum_iyy += Iyy[idx];
-                        sum_ixy += Ixy[idx];
+                        let k_idx = ((di + half_k) * kernel_size + (dj + half_k)) as usize;
+                        let weight = gaussian[k_idx];
+                        sum_ixx += ixx[idx] as f32 * weight;
+                        sum_iyy += iyy[idx] as f32 * weight;
+                        sum_ixy += ixy[idx] as f32 * weight;
                     }
                 }
                 
                 // Compute Harris response: det(M) - k * trace(M)^2
-                let det = sum_ixx as f32 * sum_iyy as f32 - sum_ixy as f32 * sum_ixy as f32;
-                let trace = sum_ixx as f32 + sum_iyy as f32;
+                let det = sum_ixx * sum_iyy - sum_ixy * sum_ixy;
+                let trace = sum_ixx + sum_iyy;
                 response[(i * w as isize + j) as usize] = det - self.params.k * trace * trace;
             }
         }
@@ -149,7 +153,7 @@ impl HarrisDetector {
     }
 
     /// Compute image gradients using Sobel operator
-    fn compute_gradients(&self, image: &[u8], width: u32, height: u32, Ix: &mut [i32], Iy: &mut [i32]) {
+    fn compute_gradients(&self, image: &[u8], width: u32, height: u32, ix: &mut [i32], iy: &mut [i32]) {
         let w = width as usize;
         let h = height as usize;
         
@@ -173,8 +177,8 @@ impl HarrisDetector {
                      2 * image[(i+1)*w + j] as i32 +
                      1 * image[(i+1)*w + (j+1)] as i32;
                 
-                Ix[i * w + j] = gx;
-                Iy[i * w + j] = gy;
+                ix[i * w + j] = gx;
+                iy[i * w + j] = gy;
             }
         }
     }
@@ -268,7 +272,7 @@ impl FastDetector {
         let w = width as usize;
         let h = height as usize;
         
-        if image.len() != w * h {
+        if image.len() != w * h || w < 7 || h < 7 {
             return Vec::new();
         }
 
@@ -287,24 +291,258 @@ impl FastDetector {
         for i in 3isize..(h as isize - 3) {
             for j in 3isize..(w as isize - 3) {
                 let center = image[(i * w as isize + j) as usize] as i32;
-                let mut consecutive = 0;
-                
-                for (dx, dy) in &circle_16 {
-                    let pixel = image[((i + dy) * w as isize + (j + dx)) as usize] as i32;
-                    if (pixel - center).abs() > t {
-                        consecutive += 1;
-                        if consecutive >= self.params.min_consecutive {
-                            corners.push(KeyPoint::new(j as f32, i as f32));
-                            break;
-                        }
-                    } else {
-                        consecutive = 0;
-                    }
+                let mut ring = [0i32; 16];
+                for (idx, (dx, dy)) in circle_16.iter().enumerate() {
+                    ring[idx] = image[((i + dy) * w as isize + (j + dx)) as usize] as i32;
+                }
+
+                if let Some(score) = self.fast_score(&ring, center, t) {
+                    corners.push(KeyPoint::with_response(j as f32, i as f32, score));
                 }
             }
         }
-        
-        corners
+
+        if !self.params.nms {
+            return corners;
+        }
+
+        self.nonmax_suppression(corners, w, h)
+    }
+
+    fn fast_score(&self, ring: &[i32; 16], center: i32, threshold: i32) -> Option<f32> {
+        let min_run = self.params.min_consecutive.max(1).min(16);
+        let mut bright = [false; 32];
+        let mut dark = [false; 32];
+        let mut diff = [0i32; 32];
+
+        for i in 0..32 {
+            let val = ring[i % 16];
+            bright[i] = val >= center + threshold;
+            dark[i] = val <= center - threshold;
+            diff[i] = (val - center).abs();
+        }
+
+        let has_run = |mask: &[bool; 32]| -> bool {
+            let mut run = 0usize;
+            for &is_on in mask {
+                if is_on {
+                    run += 1;
+                    if run >= min_run {
+                        return true;
+                    }
+                } else {
+                    run = 0;
+                }
+            }
+            false
+        };
+
+        if !has_run(&bright) && !has_run(&dark) {
+            return None;
+        }
+
+        let mut max_diff = 0i32;
+        for d in diff.iter().take(16) {
+            max_diff = max_diff.max(*d);
+        }
+        Some(max_diff as f32)
+    }
+
+    fn nonmax_suppression(&self, corners: Vec<KeyPoint>, width: usize, height: usize) -> Vec<KeyPoint> {
+        if corners.is_empty() {
+            return corners;
+        }
+
+        let mut response = vec![0.0f32; width * height];
+        for kp in &corners {
+            let x = kp.x as usize;
+            let y = kp.y as usize;
+            if x < width && y < height {
+                let idx = y * width + x;
+                response[idx] = response[idx].max(kp.response);
+            }
+        }
+
+        let mut filtered = Vec::new();
+        for kp in corners {
+            let x = kp.x as isize;
+            let y = kp.y as isize;
+            let val = kp.response;
+            let mut is_max = true;
+
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < 0 || ny < 0 || nx >= width as isize || ny >= height as isize {
+                        continue;
+                    }
+                    let nidx = ny as usize * width + nx as usize;
+                    if response[nidx] > val {
+                        is_max = false;
+                        break;
+                    }
+                }
+                if !is_max {
+                    break;
+                }
+            }
+
+            if is_max {
+                filtered.push(kp);
+            }
+        }
+
+        filtered
+    }
+}
+
+/// Harris feature extractor wrapper implementing FeatureExtractor.
+pub struct HarrisExtractor {
+    detector: HarrisDetector,
+    max_features: usize,
+}
+
+impl HarrisExtractor {
+    pub fn new(max_features: usize, params: HarrisParams) -> Self {
+        Self {
+            detector: HarrisDetector::new(params),
+            max_features,
+        }
+    }
+}
+
+impl FeatureExtractor for HarrisExtractor {
+    fn detect_and_compute(
+        &mut self,
+        image: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(Vec<BaseKeyPoint>, Descriptors), FeatureError> {
+        let keypoints = self.detect(image, width, height)?;
+        let gray = to_grayscale(image, width, height);
+        let descriptors = build_brief_descriptors(&gray, width, height, &keypoints);
+        Ok((keypoints, descriptors))
+    }
+
+    fn detect(
+        &mut self,
+        image: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<BaseKeyPoint>, FeatureError> {
+        let gray = to_grayscale(image, width, height);
+        if gray.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut keypoints: Vec<BaseKeyPoint> = self
+            .detector
+            .detect(&gray, width, height)
+            .into_iter()
+            .map(|kp| {
+                let mut base = BaseKeyPoint::new(kp.x, kp.y);
+                base.response = kp.response.abs();
+                base
+            })
+            .collect();
+
+        if keypoints.is_empty() {
+            return Ok(keypoints);
+        }
+
+        let max_response = keypoints
+            .iter()
+            .map(|kp| kp.response)
+            .fold(0.0f32, f32::max);
+        let threshold = max_response * 0.01;
+        let filtered = filter_by_response(keypoints, threshold);
+        let selected = select_keypoints_grid(filtered, width, height, self.max_features, 4, 4);
+        Ok(selected)
+    }
+
+    fn num_features(&self) -> usize {
+        self.max_features
+    }
+
+    fn set_num_features(&mut self, num: usize) {
+        self.max_features = num;
+    }
+}
+
+/// FAST feature extractor wrapper implementing FeatureExtractor.
+pub struct FastExtractor {
+    detector: FastDetector,
+    max_features: usize,
+}
+
+impl FastExtractor {
+    pub fn new(max_features: usize, params: FastParams) -> Self {
+        Self {
+            detector: FastDetector::new(params),
+            max_features,
+        }
+    }
+}
+
+impl FeatureExtractor for FastExtractor {
+    fn detect_and_compute(
+        &mut self,
+        image: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(Vec<BaseKeyPoint>, Descriptors), FeatureError> {
+        let keypoints = self.detect(image, width, height)?;
+        let gray = to_grayscale(image, width, height);
+        let descriptors = build_brief_descriptors(&gray, width, height, &keypoints);
+        Ok((keypoints, descriptors))
+    }
+
+    fn detect(
+        &mut self,
+        image: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<BaseKeyPoint>, FeatureError> {
+        let gray = to_grayscale(image, width, height);
+        if gray.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut keypoints: Vec<BaseKeyPoint> = self
+            .detector
+            .detect(&gray, width, height)
+            .into_iter()
+            .map(|kp| {
+                let mut base = BaseKeyPoint::new(kp.x, kp.y);
+                base.response = kp.response.abs();
+                base
+            })
+            .collect();
+
+        if keypoints.is_empty() {
+            return Ok(keypoints);
+        }
+
+        let max_response = keypoints
+            .iter()
+            .map(|kp| kp.response)
+            .fold(0.0f32, f32::max);
+        let threshold = max_response * 0.01;
+        let filtered = filter_by_response(keypoints, threshold);
+        let selected = select_keypoints_grid(filtered, width, height, self.max_features, 4, 4);
+        Ok(selected)
+    }
+
+    fn num_features(&self) -> usize {
+        self.max_features
+    }
+
+    fn set_num_features(&mut self, num: usize) {
+        self.max_features = num;
     }
 }
 
@@ -339,6 +577,20 @@ impl Kernels {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::base::ORB_DESCRIPTOR_SIZE;
+
+    fn checkerboard(width: u32, height: u32, block: u32) -> Vec<u8> {
+        let mut img = vec![0u8; (width * height) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let bx = (x / block) % 2;
+                let by = (y / block) % 2;
+                let v = if (bx ^ by) == 0 { 40 } else { 210 };
+                img[(y * width + x) as usize] = v;
+            }
+        }
+        img
+    }
 
     #[test]
     fn test_harris_params() {
@@ -392,5 +644,59 @@ mod tests {
         let corners = detector.detect(&image, 100, 100);
         // On uniform image, should find no corners
         assert_eq!(corners.len(), 0);
+    }
+
+    #[test]
+    fn test_fast_detector_wraparound_consecutive_arc() {
+        let width = 15u32;
+        let height = 15u32;
+        let mut image = vec![100u8; (width * height) as usize];
+        let cx = 7isize;
+        let cy = 7isize;
+
+        let circle_16 = [
+            (0isize, -3isize), (1isize, -3isize), (2isize, -2isize), (3isize, -1isize),
+            (3isize, 0isize), (3isize, 1isize), (2isize, 2isize), (1isize, 3isize),
+            (0isize, 3isize), (-1isize, 3isize), (-2isize, 2isize), (-3isize, 1isize),
+            (-3isize, 0isize), (-3isize, -1isize), (-2isize, -2isize), (-1isize, -3isize),
+        ];
+
+        // Construct a bright run that wraps around ring end -> start.
+        let wrap_run = [14usize, 15, 0, 1, 2, 3, 4, 5, 6];
+        for &idx in &wrap_run {
+            let (dx, dy) = circle_16[idx];
+            let x = (cx + dx) as usize;
+            let y = (cy + dy) as usize;
+            image[y * width as usize + x] = 150;
+        }
+
+        let detector = FastDetector::new(FastParams {
+            threshold: 20,
+            min_consecutive: 9,
+            nms: false,
+        });
+        let corners = detector.detect(&image, width, height);
+
+        assert!(corners.iter().any(|kp| kp.x as i32 == cx as i32 && kp.y as i32 == cy as i32));
+    }
+
+    #[test]
+    fn test_harris_extractor_descriptors() {
+        let img = checkerboard(128, 128, 8);
+        let mut extractor = HarrisExtractor::new(500, HarrisParams::default());
+        let (kps, desc) = extractor.detect_and_compute(&img, 128, 128).unwrap();
+        assert_eq!(desc.size, ORB_DESCRIPTOR_SIZE);
+        assert_eq!(desc.count, kps.len());
+        assert!(kps.len() <= 500);
+    }
+
+    #[test]
+    fn test_fast_extractor_descriptors() {
+        let img = checkerboard(128, 128, 8);
+        let mut extractor = FastExtractor::new(500, FastParams::default());
+        let (kps, desc) = extractor.detect_and_compute(&img, 128, 128).unwrap();
+        assert_eq!(desc.size, ORB_DESCRIPTOR_SIZE);
+        assert_eq!(desc.count, kps.len());
+        assert!(kps.len() <= 500);
     }
 }
