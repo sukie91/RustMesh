@@ -54,7 +54,7 @@ impl Default for TsdfConfig {
     fn default() -> Self {
         Self {
             voxel_size: 0.01,       // 1cm voxels
-            sdf_trunc: 0.05,        // 5cm truncation
+            sdf_trunc: 0.03,        // 3cm truncation
             min_bound: Vec3::new(-1.0, -1.0, -1.0),
             max_bound: Vec3::new(1.0, 1.0, 1.0),
             max_weight: 100.0,
@@ -96,7 +96,7 @@ impl TsdfVolume {
         let half = size_meters / 2.0;
         let config = TsdfConfig {
             voxel_size,
-            sdf_trunc: voxel_size * 4.0,
+            sdf_trunc: voxel_size * 3.0,
             min_bound: Vec3::new(-half, -half, -half),
             max_bound: Vec3::new(half, half, half),
             ..Default::default()
@@ -148,7 +148,7 @@ impl TsdfVolume {
     /// * `width` - Image width
     /// * `height` - Image height
     /// * `intrinsics` - Camera intrinsics [fx, fy, cx, cy]
-    /// * `extrinsics` - Camera pose as 4x4 matrix (world to camera)
+    /// * `extrinsics` - Camera pose as 4x4 matrix (camera to world)
     pub fn integrate(
         &mut self,
         depth: &[f32],
@@ -158,65 +158,18 @@ impl TsdfVolume {
         intrinsics: [f32; 4],
         extrinsics: &Mat4,
     ) {
-        let [fx, fy, cx, cy] = intrinsics;
-        let trunc = self.config.sdf_trunc;
-
-        // Process each pixel
-        for y in 0..height {
-            for x in 0..width {
-                let idx = y * width + x;
-                let z = depth[idx];
-
-                // Skip invalid depths
-                if z <= 0.001 || z > 10.0 {
-                    continue;
-                }
-
-                // Back-project to camera space
-                let cam_x = (x as f32 - cx) * z / fx;
-                let cam_y = (y as f32 - cy) * z / fy;
-                let cam_z = z;
-
-                // Transform to world space
-                let world_pos = extrinsics.transform_point3(Vec3::new(cam_x, cam_y, cam_z));
-
-                // Get voxel position
-                if let Some((vx, vy, vz)) = self.world_to_voxel(world_pos) {
-                    // Compute SDF (distance to surface)
-                    // Positive = in front of surface, Negative = behind
-                    let sdf = z - cam_z;
-
-                    // Truncate SDF
-                    let tsdf = sdf.clamp(-trunc, trunc) / trunc;
-
-                    // Get voxel and update
-                    let integration_weight = self.config.integration_weight;
-                    let max_weight = self.config.max_weight;
-                    let voxel = self.get_voxel_mut(vx, vy, vz);
-
-                    // TSDF fusion
-                    voxel.tsdf = (voxel.tsdf * voxel.weight + tsdf * integration_weight) / (voxel.weight + integration_weight);
-                    voxel.weight = (voxel.weight + integration_weight).min(max_weight);
-
-                    // Color fusion (if available)
-                    if let Some(colors) = color {
-                        let c = colors[idx];
-                        let cr = c[0] as f32 / 255.0;
-                        let cg = c[1] as f32 / 255.0;
-                        let cb = c[2] as f32 / 255.0;
-
-                        voxel.color = [
-                            (voxel.color[0] * voxel.color_weight + cr * integration_weight) / (voxel.color_weight + integration_weight),
-                            (voxel.color[1] * voxel.color_weight + cg * integration_weight) / (voxel.color_weight + integration_weight),
-                            (voxel.color[2] * voxel.color_weight + cb * integration_weight) / (voxel.color_weight + integration_weight),
-                        ];
-                        voxel.color_weight += integration_weight;
-                    }
-                }
-            }
-        }
-
-        self.frame_count += 1;
+        let depth_fn = |idx: usize| -> f32 { depth.get(idx).copied().unwrap_or(0.0) };
+        let color_fn = color.map(|colors| {
+            move |idx: usize| -> Option<[u8; 3]> { colors.get(idx).copied() }
+        });
+        self.integrate_depth_map(
+            &depth_fn,
+            color_fn.as_ref().map(|f| f as &dyn Fn(usize) -> Option<[u8; 3]>),
+            width,
+            height,
+            intrinsics,
+            extrinsics,
+        );
     }
 
     /// Integrate from Gaussian rendering (project Gaussians to depth)
@@ -233,8 +186,28 @@ impl TsdfVolume {
     ) where
         F: Fn(usize) -> f32,
     {
+        self.integrate_depth_map(
+            &get_depth_at,
+            get_color_at,
+            width,
+            height,
+            intrinsics,
+            extrinsics,
+        );
+    }
+
+    fn integrate_depth_map(
+        &mut self,
+        get_depth_at: &dyn Fn(usize) -> f32,
+        get_color_at: Option<&dyn Fn(usize) -> Option<[u8; 3]>>,
+        width: usize,
+        height: usize,
+        intrinsics: [f32; 4],
+        extrinsics: &Mat4,
+    ) {
         let [fx, fy, cx, cy] = intrinsics;
-        let trunc = self.config.sdf_trunc;
+        let trunc = self.config.sdf_trunc.max(self.config.voxel_size);
+        let step = self.config.voxel_size.max(1e-6);
 
         for y in 0..height {
             for x in 0..width {
@@ -245,37 +218,52 @@ impl TsdfVolume {
                     continue;
                 }
 
-                // Back-project to camera space
-                let cam_x = (x as f32 - cx) * z / fx;
-                let cam_y = (y as f32 - cy) * z / fy;
+                let ray_dir = Vec3::new((x as f32 - cx) / fx, (y as f32 - cy) / fy, 1.0);
+                let mut t = (z - trunc).max(0.0);
+                let t_end = z + trunc;
+                let mut last_voxel: Option<(i32, i32, i32)> = None;
 
-                // Transform to world space
-                let world_pos = extrinsics.transform_point3(Vec3::new(cam_x, cam_y, z));
+                while t <= t_end {
+                    let cam_pos = ray_dir * t;
+                    let world_pos = extrinsics.transform_point3(cam_pos);
+                    if let Some((vx, vy, vz)) = self.world_to_voxel(world_pos) {
+                        if last_voxel != Some((vx, vy, vz)) {
+                            let sdf = z - t;
+                            let tsdf = (sdf / trunc).clamp(-1.0, 1.0);
 
-                if let Some((vx, vy, vz)) = self.world_to_voxel(world_pos) {
-                    let sdf: f32 = 0.0; // Surface point
-                    let tsdf = sdf.clamp(-trunc, trunc) / trunc;
+                            let integration_weight = self.config.integration_weight;
+                            if integration_weight <= 0.0 {
+                                continue;
+                            }
+                            let max_weight = self.config.max_weight;
+                            let voxel = self.get_voxel_mut(vx, vy, vz);
+                            let tsdf_denom = (voxel.weight + integration_weight).max(1e-8);
+                            voxel.tsdf = (voxel.tsdf * voxel.weight + tsdf * integration_weight)
+                                / tsdf_denom;
+                            voxel.weight = (voxel.weight + integration_weight).min(max_weight);
 
-                    let integration_weight = self.config.integration_weight;
-                    let max_weight = self.config.max_weight;
-                    let voxel = self.get_voxel_mut(vx, vy, vz);
-                    voxel.tsdf = (voxel.tsdf * voxel.weight + tsdf * integration_weight) / (voxel.weight + integration_weight);
-                    voxel.weight = (voxel.weight + integration_weight).min(max_weight);
+                            if let Some(color_fn) = get_color_at {
+                                if let Some(c) = color_fn(idx) {
+                                    let cr = c[0] as f32 / 255.0;
+                                    let cg = c[1] as f32 / 255.0;
+                                    let cb = c[2] as f32 / 255.0;
+                                    let color_denom = (voxel.color_weight + integration_weight).max(1e-8);
+                                    voxel.color = [
+                                        (voxel.color[0] * voxel.color_weight + cr * integration_weight)
+                                            / color_denom,
+                                        (voxel.color[1] * voxel.color_weight + cg * integration_weight)
+                                            / color_denom,
+                                        (voxel.color[2] * voxel.color_weight + cb * integration_weight)
+                                            / color_denom,
+                                    ];
+                                    voxel.color_weight += integration_weight;
+                                }
+                            }
 
-                    // Color integration
-                    if let Some(color_fn) = get_color_at {
-                        if let Some(c) = color_fn(idx) {
-                            let cr = c[0] as f32 / 255.0;
-                            let cg = c[1] as f32 / 255.0;
-                            let cb = c[2] as f32 / 255.0;
-                            voxel.color = [
-                                (voxel.color[0] * voxel.color_weight + cr * integration_weight) / (voxel.color_weight + integration_weight),
-                                (voxel.color[1] * voxel.color_weight + cg * integration_weight) / (voxel.color_weight + integration_weight),
-                                (voxel.color[2] * voxel.color_weight + cb * integration_weight) / (voxel.color_weight + integration_weight),
-                            ];
-                            voxel.color_weight += integration_weight;
+                            last_voxel = Some((vx, vy, vz));
                         }
                     }
+                    t += step;
                 }
             }
         }
@@ -363,5 +351,17 @@ mod tests {
         volume.integrate(&depth, None, 10, 10, intrinsics, &extrinsics);
 
         assert!(volume.frame_count() > 0);
+    }
+
+    #[test]
+    fn test_integrate_updates_multiple_voxels() {
+        let mut volume = TsdfVolume::centered(0.5, 0.05);
+        let depth = vec![0.2f32; 1];
+        let intrinsics = [1.0, 1.0, 0.0, 0.0];
+        let extrinsics = Mat4::IDENTITY;
+
+        volume.integrate(&depth, None, 1, 1, intrinsics, &extrinsics);
+
+        assert!(volume.num_voxels() > 1);
     }
 }

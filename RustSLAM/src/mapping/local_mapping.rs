@@ -271,6 +271,14 @@ impl LocalMapping {
             return;
         }
         
+        // Use configured camera intrinsics if available; otherwise fall back to defaults.
+        let (fx, fy) = if let Some(ref cam) = self.camera {
+            (cam.focal.x.max(1.0), cam.focal.y.max(1.0))
+        } else {
+            let defaults = Camera::default();
+            (defaults.focal.x.max(1.0), defaults.focal.y.max(1.0))
+        };
+
         // For each feature in kf1 without a map point, try to triangulate
         for (i, (kp1, mp1)) in features1.keypoints.iter()
             .zip(features1.map_points.iter())
@@ -290,8 +298,8 @@ impl LocalMapping {
             let depth = baseline * 0.5; // Simplified depth estimation
             
             // Create 3D point in world coordinates (simplified)
-            let x = kp1[0] * depth / 500.0; // Assume focal length ~500
-            let y = kp1[1] * depth / 500.0;
+            let x = kp1[0] * depth / fx;
+            let y = kp1[1] * depth / fy;
             let z = depth;
             
             // Check if point is in front of both cameras

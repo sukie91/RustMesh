@@ -6,17 +6,16 @@
 //! - Backward pass: gradient computation
 //! - Parameter update with Adam
 
-use candle_core::{Tensor, Device, DType, Var};
-use std::sync::Arc;
-use crate::fusion::diff_splat::{TrainableGaussians, DiffSplatRenderer, DiffCamera, DiffRenderOutput, DiffLoss};
+use candle_core::{Tensor, Device, Var};
+use crate::fusion::diff_splat::{TrainableGaussians, DiffSplatRenderer, DiffCamera};
+use crate::fusion::analytical_backward;
+use serde::{Deserialize, Serialize};
 
 /// Learning rate scheduler
 #[derive(Debug, Clone)]
 pub struct LrScheduler {
     /// Base learning rate
     base_lr: f32,
-    /// Current learning rate
-    current_lr: f32,
     /// Warmup iterations
     warmup_iters: usize,
     /// Total iterations
@@ -27,7 +26,6 @@ impl LrScheduler {
     pub fn new(base_lr: f32, warmup_iters: usize, total_iters: usize) -> Self {
         Self {
             base_lr,
-            current_lr: 0.0,
             warmup_iters,
             total_iters,
         }
@@ -37,10 +35,14 @@ impl LrScheduler {
     pub fn get_lr(&self, iteration: usize) -> f32 {
         if iteration < self.warmup_iters {
             // Linear warmup
+            if self.warmup_iters == 0 {
+                return self.base_lr;
+            }
             self.base_lr * (iteration as f32 / self.warmup_iters as f32)
         } else {
             // Cosine decay
-            let progress = (iteration - self.warmup_iters) as f32 / (self.total_iters - self.warmup_iters) as f32;
+            let decay_span = self.total_iters.saturating_sub(self.warmup_iters).max(1);
+            let progress = (iteration.saturating_sub(self.warmup_iters)) as f32 / decay_span as f32;
             self.base_lr * 0.5 * (1.0 + (progress * std::f32::consts::PI).cos())
         }
     }
@@ -53,6 +55,21 @@ pub struct TrainingResult {
     pub iterations: usize,
     pub num_gaussians: usize,
     pub loss_history: Vec<f32>,
+}
+
+/// Adam optimizer state for checkpointing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrainerAdamState {
+    pub m_pos: Vec<f32>,
+    pub m_scale: Vec<f32>,
+    pub m_rot: Vec<f32>,
+    pub m_op: Vec<f32>,
+    pub m_color: Vec<f32>,
+    pub v_pos: Vec<f32>,
+    pub v_scale: Vec<f32>,
+    pub v_rot: Vec<f32>,
+    pub v_op: Vec<f32>,
+    pub v_color: Vec<f32>,
 }
 
 /// Complete trainer with backward propagation
@@ -99,6 +116,10 @@ pub struct CompleteTrainer {
     iteration: usize,
     /// Loss history
     loss_history: Vec<f32>,
+    /// Learning-rate scheduler multiplier
+    lr_scheduler: LrScheduler,
+    /// Use analytical backward pass instead of finite differences (default: true)
+    pub use_analytical_backward: bool,
 }
 
 impl CompleteTrainer {
@@ -141,6 +162,8 @@ impl CompleteTrainer {
             v_color: Vec::new(),
             iteration: 0,
             loss_history: Vec::new(),
+            lr_scheduler: LrScheduler::new(1.0, 100, 3000),
+            use_analytical_backward: true,
         }
     }
 
@@ -166,9 +189,10 @@ impl CompleteTrainer {
     }
 
     /// Training step with backward propagation
-    /// 
-    /// Note: Candle's automatic differentiation requires the computation
-    /// to be defined in a specific way. This is a simplified version.
+    ///
+    /// When `use_analytical_backward` is true (default), uses exact analytical
+    /// gradients from a single forward+backward pass (~100x faster than finite diff).
+    /// When false, falls back to the legacy finite-difference approach.
     pub fn training_step(
         &mut self,
         gaussians: &mut TrainableGaussians,
@@ -176,74 +200,223 @@ impl CompleteTrainer {
         target_color: &[f32],
         target_depth: &[f32],
     ) -> candle_core::Result<f32> {
-        // Get number of Gaussians
         let n = gaussians.len();
-        
-        // Initialize Adam state if needed
+
         if self.m_pos.is_empty() {
             self.init_adam_state(n);
         }
 
-        // Forward pass - render
-        let output = self.renderer.render(gaussians, camera)?;
-        
-        // Compute loss
-        let loss = self.renderer.compute_loss(&output, target_color, target_depth)?;
-        
-        // Get loss value
-        let loss_value = loss.total.to_vec0::<f32>()?;
-        
-        // Record loss
+        // Extract current raw parameters
+        let mut pos_data = flatten_2d(&gaussians.positions().to_vec2::<f32>()?);
+        let mut scale_data = flatten_2d(&gaussians.scales.as_tensor().to_vec2::<f32>()?);
+        let mut rot_data = flatten_2d(&gaussians.rotations.as_tensor().to_vec2::<f32>()?);
+        let mut op_data = gaussians.opacities.as_tensor().to_vec1::<f32>()?;
+        let mut color_data = flatten_2d(&gaussians.colors().to_vec2::<f32>()?);
+
+        let (loss_value, pos_grad, scale_grad, rot_grad, op_grad, color_grad) =
+            if self.use_analytical_backward {
+                self.analytical_training_step(
+                    gaussians, camera, target_color, target_depth, n,
+                    &pos_data, &scale_data, &op_data, &color_data,
+                )?
+            } else {
+                self.finite_diff_training_step(
+                    gaussians, camera, target_color, target_depth, n,
+                    &mut pos_data, &mut scale_data, &mut rot_data, &mut op_data, &mut color_data,
+                )?
+            };
+
         self.loss_history.push(loss_value);
         self.iteration += 1;
 
-        // === BACKWARD PASS (Simplified) ===
-        // 
-        // In full 3DGS, backward involves:
-        // 1. Compute gradient of loss w.r.t. rendered output
-        // 2. Backprop through alpha blending
-        // 3. Backprop through 2D Gaussian evaluation
-        // 4. Backprop through 3D→2D projection
-        // 5. Get gradients for all Gaussian parameters
-        //
-        // Here we simulate with random gradients for demonstration
-        // In practice, you would use candle's grad() function
-        
-        // Get parameters (simplified - would need gradient tracking)
-        let pos_data = gaussians.positions().to_vec1::<f32>()?;
-        let scale_data = gaussians.scales()?.to_vec1::<f32>()?;
-        
-        // Simulate gradient computation (in real impl, this comes from backward())
-        // Gradient magnitude decreases over time
-        let grad_scale = (1.0 / (1.0 + self.iteration as f32 * 0.001)).max(0.01);
-        
-        // Generate simulated gradients (in practice: from backward())
-        let pos_grad: Vec<f32> = (0..n * 3).map(|_| (rand_simple() - 0.5) * grad_scale).collect();
-        let scale_grad: Vec<f32> = (0..n * 3).map(|_| (rand_simple() - 0.5) * grad_scale).collect();
-        
-        // Update with Adam
-        adam_update(
-            &mut pos_data.clone(),
-            &pos_grad,
-            &mut self.m_pos,
-            &mut self.v_pos,
-            self.lr_pos,
-            self.beta1,
-            self.beta2,
-            self.iteration,
-        );
-        
-        // In full implementation, also update:
-        // - scales (with exponential transform)
-        // - rotations (with normalization)
-        // - opacities (with sigmoid)
-        // - colors
+        let lr_factor = self.lr_scheduler.get_lr(self.iteration).max(1e-4);
+        adam_update(&mut pos_data, &pos_grad, &mut self.m_pos, &mut self.v_pos,
+            self.lr_pos * lr_factor, self.beta1, self.beta2, self.iteration);
+        adam_update(&mut scale_data, &scale_grad, &mut self.m_scale, &mut self.v_scale,
+            self.lr_scale * lr_factor, self.beta1, self.beta2, self.iteration);
+        adam_update(&mut rot_data, &rot_grad, &mut self.m_rot, &mut self.v_rot,
+            self.lr_rot * lr_factor, self.beta1, self.beta2, self.iteration);
+        adam_update(&mut op_data, &op_grad, &mut self.m_op, &mut self.v_op,
+            self.lr_op * lr_factor, self.beta1, self.beta2, self.iteration);
+        adam_update(&mut color_data, &color_grad, &mut self.m_color, &mut self.v_color,
+            self.lr_color * lr_factor, self.beta1, self.beta2, self.iteration);
 
-        // Update the Gaussians
-        let new_pos = Tensor::from_slice(&pos_data, (n, 3), &self.device)?;
-        // gaussians.positions.set(&new_pos);  // Would need interior mutability
+        // Normalize rotations
+        for i in 0..n {
+            let r = i * 4;
+            let norm = (rot_data[r]*rot_data[r] + rot_data[r+1]*rot_data[r+1]
+                + rot_data[r+2]*rot_data[r+2] + rot_data[r+3]*rot_data[r+3])
+                .sqrt().max(1e-6);
+            rot_data[r] /= norm;
+            rot_data[r+1] /= norm;
+            rot_data[r+2] /= norm;
+            rot_data[r+3] /= norm;
+        }
+
+        gaussians.positions = Var::from_tensor(&Tensor::from_slice(&pos_data, (n, 3), &self.device)?)?;
+        gaussians.scales = Var::from_tensor(&Tensor::from_slice(&scale_data, (n, 3), &self.device)?)?;
+        gaussians.rotations = Var::from_tensor(&Tensor::from_slice(&rot_data, (n, 4), &self.device)?)?;
+        gaussians.opacities = Var::from_tensor(&Tensor::from_slice(&op_data, (n,), &self.device)?)?;
+        gaussians.colors = Var::from_tensor(&Tensor::from_slice(&color_data, (n, 3), &self.device)?)?;
 
         Ok(loss_value)
+    }
+
+    /// Analytical backward: 1 forward + 1 backward pass.
+    fn analytical_training_step(
+        &self,
+        gaussians: &TrainableGaussians,
+        camera: &DiffCamera,
+        target_color: &[f32],
+        target_depth: &[f32],
+        n: usize,
+        pos_data: &[f32],
+        scale_data: &[f32],
+        op_data: &[f32],
+        color_data: &[f32],
+    ) -> candle_core::Result<(f32, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> {
+        // Forward pass with intermediates
+        let (output, intermediate) = self.renderer.render_with_intermediates(gaussians, camera)?;
+        let loss = self.renderer.compute_loss(&output, target_color, target_depth)?;
+        let loss_value = loss.total.to_vec0::<f32>()?;
+
+        // Analytical backward
+        let grads = analytical_backward::backward(
+            &intermediate, target_color, n,
+            camera.fx, camera.fy, camera.cx, camera.cy,
+        );
+
+        // Blend with surrogate gradients (10% weight for regularization)
+        let surrogate = self.renderer.compute_surrogate_gradients(gaussians)?;
+        let mut pos_grad = grads.positions;
+        let mut scale_grad = grads.log_scales;
+        let mut op_grad = grads.opacity_logits;
+        let mut color_grad = grads.colors;
+        blend_gradients(&mut pos_grad, &surrogate.positions, 0.1);
+        blend_gradients(&mut scale_grad, &surrogate.scales, 0.1);
+        blend_gradients(&mut op_grad, &surrogate.opacities, 0.1);
+        blend_gradients(&mut color_grad, &surrogate.colors, 0.1);
+
+        let mut rot_grad = surrogate.rotations;
+        if rot_grad.len() != n * 4 {
+            rot_grad = vec![0.0; n * 4];
+        }
+
+        Ok((loss_value, pos_grad, scale_grad, rot_grad, op_grad, color_grad))
+    }
+
+    /// Legacy finite-difference gradient estimation.
+    fn finite_diff_training_step(
+        &self,
+        gaussians: &TrainableGaussians,
+        camera: &DiffCamera,
+        target_color: &[f32],
+        target_depth: &[f32],
+        n: usize,
+        pos_data: &mut Vec<f32>,
+        scale_data: &mut Vec<f32>,
+        rot_data: &mut Vec<f32>,
+        op_data: &mut Vec<f32>,
+        color_data: &mut Vec<f32>,
+    ) -> candle_core::Result<(f32, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> {
+        let output = self.renderer.render(gaussians, camera)?;
+        let loss = self.renderer.compute_loss(&output, target_color, target_depth)?;
+        let loss_value = loss.total.to_vec0::<f32>()?;
+
+        let mut pos_grad = vec![0.0f32; n * 3];
+        let mut scale_grad = vec![0.0f32; n * 3];
+        let mut op_grad = vec![0.0f32; n];
+        let mut color_grad = vec![0.0f32; n * 3];
+        let eps = 1e-3f32;
+        let sample_count = n.min(8).max(1);
+        let stride = n.div_ceil(sample_count);
+
+        for s in 0..sample_count {
+            let i = s * stride;
+            if i >= n { break; }
+
+            for d in 0..3 {
+                let idx = i * 3 + d;
+                pos_data[idx] += eps;
+                let plus = self.evaluate_loss(pos_data, scale_data, rot_data, op_data, color_data, n, camera, target_color, target_depth)?;
+                pos_data[idx] -= 2.0 * eps;
+                let minus = self.evaluate_loss(pos_data, scale_data, rot_data, op_data, color_data, n, camera, target_color, target_depth)?;
+                pos_data[idx] += eps;
+                pos_grad[idx] = (plus - minus) / (2.0 * eps);
+            }
+
+            for d in 0..3 {
+                let idx = i * 3 + d;
+                scale_data[idx] += eps;
+                let plus = self.evaluate_loss(pos_data, scale_data, rot_data, op_data, color_data, n, camera, target_color, target_depth)?;
+                scale_data[idx] -= 2.0 * eps;
+                let minus = self.evaluate_loss(pos_data, scale_data, rot_data, op_data, color_data, n, camera, target_color, target_depth)?;
+                scale_data[idx] += eps;
+                scale_grad[idx] = (plus - minus) / (2.0 * eps);
+            }
+
+            let op_idx = i;
+            op_data[op_idx] += eps;
+            let plus = self.evaluate_loss(pos_data, scale_data, rot_data, op_data, color_data, n, camera, target_color, target_depth)?;
+            op_data[op_idx] -= 2.0 * eps;
+            let minus = self.evaluate_loss(pos_data, scale_data, rot_data, op_data, color_data, n, camera, target_color, target_depth)?;
+            op_data[op_idx] += eps;
+            op_grad[op_idx] = (plus - minus) / (2.0 * eps);
+
+            for d in 0..3 {
+                let idx = i * 3 + d;
+                color_data[idx] += eps;
+                let plus = self.evaluate_loss(pos_data, scale_data, rot_data, op_data, color_data, n, camera, target_color, target_depth)?;
+                color_data[idx] -= 2.0 * eps;
+                let minus = self.evaluate_loss(pos_data, scale_data, rot_data, op_data, color_data, n, camera, target_color, target_depth)?;
+                color_data[idx] += eps;
+                color_grad[idx] = (plus - minus) / (2.0 * eps);
+            }
+        }
+
+        let surrogate_grads = self.renderer.compute_surrogate_gradients(gaussians)?;
+        blend_gradients(&mut pos_grad, &surrogate_grads.positions, 0.2);
+        blend_gradients(&mut scale_grad, &surrogate_grads.scales, 0.2);
+        blend_gradients(&mut op_grad, &surrogate_grads.opacities, 0.2);
+        blend_gradients(&mut color_grad, &surrogate_grads.colors, 0.2);
+        let mut rot_grad = surrogate_grads.rotations;
+        if rot_grad.len() != n * 4 {
+            rot_grad = vec![0.0; n * 4];
+        }
+
+        Ok((loss_value, pos_grad, scale_grad, rot_grad, op_grad, color_grad))
+    }
+
+    fn evaluate_loss(
+        &self,
+        positions: &[f32],
+        scales: &[f32],
+        rotations: &[f32],
+        opacities: &[f32],
+        colors: &[f32],
+        n: usize,
+        camera: &DiffCamera,
+        target_color: &[f32],
+        target_depth: &[f32],
+    ) -> candle_core::Result<f32> {
+        let temp = TrainableGaussians::new(
+            positions,
+            scales,
+            rotations,
+            opacities,
+            colors,
+            &self.device,
+        )?;
+        let output = self.renderer.render(&temp, camera)?;
+        let loss = self.renderer.compute_loss(&output, target_color, target_depth)?;
+        let value = loss.total.to_vec0::<f32>()?;
+        if !value.is_finite() {
+            return Ok(0.0);
+        }
+        if temp.len() != n {
+            return Ok(0.0);
+        }
+        Ok(value)
     }
 
     /// Train on multiple frames
@@ -288,6 +461,98 @@ impl CompleteTrainer {
             loss_history: self.loss_history.clone(),
         })
     }
+
+    /// Train with optional checkpoint manager.
+    pub fn train_with_checkpoints(
+        &mut self,
+        gaussians: &mut TrainableGaussians,
+        cameras: &[DiffCamera],
+        colors: &[&[f32]],
+        depths: &[&[f32]],
+        max_iterations: usize,
+        mut checkpoint_manager: Option<&mut crate::fusion::training_checkpoint::TrainingCheckpointManager>,
+    ) -> candle_core::Result<TrainingResult> {
+        let num_frames = cameras.len();
+
+        for iter in 0..max_iterations {
+            let frame_idx = iter % num_frames;
+            let loss = self.training_step(
+                gaussians,
+                &cameras[frame_idx],
+                colors[frame_idx],
+                depths[frame_idx],
+            )?;
+
+            if iter % 100 == 0 {
+                println!("Iter {:5} | Loss: {:.6}", iter, loss);
+            }
+
+            if let Some(manager) = checkpoint_manager.as_deref_mut() {
+                match manager.maybe_save(self.iteration, gaussians, self) {
+                    Ok(path) => {
+                        if !path.as_os_str().is_empty() {
+                            log::info!("Training checkpoint saved: {}", path.display());
+                        }
+                    }
+                    Err(err) => {
+                        log::warn!("Failed to save training checkpoint: {}", err);
+                    }
+                }
+            }
+        }
+
+        let final_loss = self.loss_history.last().copied().unwrap_or(0.0);
+        Ok(TrainingResult {
+            final_loss,
+            iterations: max_iterations,
+            num_gaussians: gaussians.len(),
+            loss_history: self.loss_history.clone(),
+        })
+    }
+
+    pub fn export_adam_state(&self) -> TrainerAdamState {
+        TrainerAdamState {
+            m_pos: self.m_pos.clone(),
+            m_scale: self.m_scale.clone(),
+            m_rot: self.m_rot.clone(),
+            m_op: self.m_op.clone(),
+            m_color: self.m_color.clone(),
+            v_pos: self.v_pos.clone(),
+            v_scale: self.v_scale.clone(),
+            v_rot: self.v_rot.clone(),
+            v_op: self.v_op.clone(),
+            v_color: self.v_color.clone(),
+        }
+    }
+
+    pub fn import_adam_state(&mut self, state: TrainerAdamState) {
+        self.m_pos = state.m_pos;
+        self.m_scale = state.m_scale;
+        self.m_rot = state.m_rot;
+        self.m_op = state.m_op;
+        self.m_color = state.m_color;
+        self.v_pos = state.v_pos;
+        self.v_scale = state.v_scale;
+        self.v_rot = state.v_rot;
+        self.v_op = state.v_op;
+        self.v_color = state.v_color;
+    }
+
+    pub fn iteration(&self) -> usize {
+        self.iteration
+    }
+
+    pub fn set_iteration(&mut self, iteration: usize) {
+        self.iteration = iteration;
+    }
+
+    pub fn loss_history(&self) -> &[f32] {
+        &self.loss_history
+    }
+
+    pub fn set_loss_history(&mut self, history: Vec<f32>) {
+        self.loss_history = history;
+    }
 }
 
 /// Adam update step (standalone function)
@@ -323,15 +588,18 @@ fn adam_update(
     }
 }
 
-/// Simple random number generator (for simulation)
-fn rand_simple() -> f32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-    let x = seed.wrapping_mul(1103515245).wrapping_add(12345);
-    ((x >> 16) & 0x7fff) as f32 / 32768.0
+fn flatten_2d(data: &[Vec<f32>]) -> Vec<f32> {
+    data.iter().flatten().copied().collect()
+}
+
+fn blend_gradients(dst: &mut [f32], src: &[f32], weight: f32) {
+    if dst.len() != src.len() {
+        return;
+    }
+    let w = weight.clamp(0.0, 1.0);
+    for i in 0..dst.len() {
+        dst[i] = (1.0 - w) * dst[i] + w * src[i];
+    }
 }
 
 /// Example usage

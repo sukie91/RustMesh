@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::env;
 
-use rustslam::io::{DatasetConfig, TumRgbdDataset};
+use rustslam::io::{Dataset, DatasetConfig, TumRgbdDataset};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== RustSLAM TUM RGB-D Dataset Loader ===\n");

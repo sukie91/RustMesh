@@ -2,6 +2,7 @@
 
 use crate::core::{Frame, FrameFeatures, KeyFrame, Map, SE3};
 use crate::features::{Descriptors, KeyPoint};
+use crate::features::base::ORB_DESCRIPTOR_SIZE;
 
 mod detector_tests {
     use super::*;
@@ -15,7 +16,7 @@ mod detector_tests {
 
     /// Create test descriptors with controlled values
     fn create_test_descriptors(count: usize, seed: u8) -> Descriptors {
-        let size = 32; // ORB descriptor size
+        let size = ORB_DESCRIPTOR_SIZE;
         let mut data = vec![0u8; count * size];
         for i in 0..data.len() {
             data[i] = (seed as u8).wrapping_add(i as u8);

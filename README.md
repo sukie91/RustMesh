@@ -162,6 +162,26 @@ cargo test
 
 ---
 
+## Examples
+
+Run the end-to-end sample pipeline on three short iPhone clips with expected outputs:
+
+```bash
+./run_examples.sh
+```
+
+Outputs are written to `output/examples` and compared against `test_data/expected` by default.
+
+Environment overrides:
+- `RUSTSCAN_PROFILE` default `release`
+- `RUSTSCAN_MAX_FRAMES` default `12`
+- `RUSTSCAN_FRAME_STRIDE` default `2`
+- `RUSTSCAN_MESH_VOXEL_SIZE` default `0.05`
+- `RUSTSCAN_PREFER_HW` default `false`
+- `RUSTSCAN_COMPARE` default `1` (set to `0` to skip mesh count comparison)
+
+---
+
 ## Progress Overview
 
 | Module | Completion | Priority | Notes |

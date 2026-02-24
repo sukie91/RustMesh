@@ -91,6 +91,12 @@ cargo test --lib
 cargo test --example test_marching_cubes
 cargo test --example test_video_loader
 cargo test --example test_optimization_thread
+
+# Run end-to-end pipeline test (uses test_data/video/sofa.MOV)
+RUSTSCAN_E2E=1 cargo test -- test_end_to_end_pipeline_video
+
+# Run E2E test with custom thresholds
+RUSTSCAN_E2E=1 RUSTSCAN_E2E_MAX_FRAMES=100 RUSTSCAN_E2E_PSNR=25.0 cargo test -- test_end_to_end_pipeline_video
 ```
 
 ## Running Examples
@@ -119,6 +125,12 @@ cargo run --release --example run_vo
 
 # Run with dataset
 cargo run --release --example run_vo -- --dataset path/to/dataset
+
+# Run full pipeline via CLI
+cargo run --release -- --input ../test_data/video/sofa.MOV --output ./output
+
+# Run example videos (from repo root)
+./run_examples.sh
 ```
 
 ## Benchmarking

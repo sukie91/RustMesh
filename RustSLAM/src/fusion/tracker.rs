@@ -36,6 +36,15 @@ impl TrackingResult {
 pub struct GaussianTracker {
     /// Renderer for depth
     renderer: GaussianRenderer,
+    /// Image width
+    width: usize,
+    /// Image height
+    height: usize,
+    /// Camera intrinsics
+    fx: f32,
+    fy: f32,
+    cx: f32,
+    cy: f32,
     /// ICP iterations
     icp_iterations: usize,
     /// Depth threshold for matching
@@ -47,12 +56,34 @@ pub struct GaussianTracker {
 impl GaussianTracker {
     /// Create a new tracker
     pub fn new(width: usize, height: usize) -> Self {
+        let default_cam = crate::core::Camera::default();
+        let fx_scale = default_cam.focal.x / default_cam.width as f32;
+        let fy_scale = default_cam.focal.y / default_cam.height as f32;
+        let fx = (width as f32 * fx_scale).max(1.0);
+        let fy = (height as f32 * fy_scale).max(1.0);
+        let cx = width as f32 * 0.5;
+        let cy = height as f32 * 0.5;
+
         Self {
             renderer: GaussianRenderer::new(width, height),
+            width,
+            height,
+            fx,
+            fy,
+            cx,
+            cy,
             icp_iterations: 10,
             depth_threshold: 0.5,  // 50cm
             max_correspondence_dist: 0.1,  // 10cm
         }
+    }
+
+    /// Override camera intrinsics used by tracking.
+    pub fn set_intrinsics(&mut self, fx: f32, fy: f32, cx: f32, cy: f32) {
+        self.fx = fx.max(1.0);
+        self.fy = fy.max(1.0);
+        self.cx = cx;
+        self.cy = cy;
     }
 
     /// Track camera pose using rendered depth
@@ -122,10 +153,10 @@ impl GaussianTracker {
         let translation = pose.translation();
 
         GaussianCamera::new(
-            500.0,  // Default fx
-            500.0,  // Default fy
-            320.0,  // Default cx
-            240.0,  // Default cy
+            self.fx,
+            self.fy,
+            self.cx,
+            self.cy,
         )
         .with_pose(rotation, translation)
     }
@@ -158,8 +189,8 @@ impl GaussianTracker {
 
             if diff < self.depth_threshold {
                 // Compute 3D point
-                let u = (i % 640) as f32;
-                let v = (i / 640) as f32;
+                let u = (i % self.width) as f32;
+                let v = (i / self.width) as f32;
 
                 let x = (u - camera.cx) * obs_d / camera.fx;
                 let y = (v - camera.cy) * obs_d / camera.fy;

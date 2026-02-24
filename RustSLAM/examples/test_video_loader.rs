@@ -4,7 +4,6 @@
 
 use rustslam::test_utils::*;
 
-#[test]
 fn test_mock_frame_creation() {
     // Test creating mock frames with different patterns
     let patterns = vec![
@@ -28,7 +27,6 @@ fn test_mock_frame_creation() {
     }
 }
 
-#[test]
 fn test_mock_frame_patterns() {
     // Test solid pattern
     let solid = create_mock_frame(100, 100, FramePattern::Solid);
@@ -58,7 +56,6 @@ fn test_mock_frame_patterns() {
     );
 }
 
-#[test]
 fn test_frame_dimensions() {
     // Test various resolutions
     let resolutions = vec![

@@ -4,8 +4,6 @@
 //! Implements Bundle Adjustment using Gauss-Newton algorithm.
 
 use crate::core::SE3;
-use nalgebra::{Matrix3, Vector3};
-
 /// Camera pose with intrinsics for BA
 #[derive(Clone)]
 pub struct BACamera {
@@ -225,6 +223,16 @@ impl BundleAdjuster {
             .collect()
     }
 
+    fn total_cost(&self) -> f64 {
+        self.compute_errors().iter().sum()
+    }
+
+    fn perturb_pose(pose: &SE3, axis: usize, delta: f32) -> SE3 {
+        let mut twist = [0.0f32; 6];
+        twist[axis] = delta;
+        SE3::exp(&twist).compose(pose)
+    }
+
     /// Build and run BA optimization using Gauss-Newton
     pub fn optimize(&mut self, max_iterations: usize) -> Result<(Vec<BACamera>, Vec<BALandmark>), String> {
         if self.cameras.is_empty() {
@@ -246,10 +254,12 @@ impl BundleAdjuster {
             println!("Initial cost: {:.6}", initial_cost);
         }
 
-        // Gauss-Newton iteration
+        // Joint optimization over camera poses and landmarks (finite-difference gradient descent)
         self.iterations = 0;
         let mut prev_cost = initial_cost;
-        
+        let eps_pose = 1e-4f64;
+        let eps_point = 1e-4f64;
+
         for iter in 0..max_iterations {
             self.iterations = iter + 1;
             
@@ -270,28 +280,57 @@ impl BundleAdjuster {
             }
             prev_cost = total_cost;
             
-            // Build and solve normal equations (simplified)
-            // For each landmark, compute gradient and update
-            for (cam_idx, lm_idx, obs) in &self.observations {
-                if let Some(projected) = self.project(*cam_idx, *lm_idx) {
-                    let error_x = (projected[0] - obs.uv[0]) as f32;
-                    let error_y = (projected[1] - obs.uv[1]) as f32;
-                    
-                    let camera = &self.cameras[*cam_idx];
-                    let landmark = &mut self.landmarks[*lm_idx];
-                    
-                    if !landmark.fix_position {
-                        // Simplified gradient descent update
-                        let fx = camera.fx() as f32;
-                        let fy = camera.fy() as f32;
-                        let z = landmark.position[2] as f32;
-                        
-                        if z > 0.1 {
-                            let rate = 0.5;
-                            landmark.position[0] -= (rate * error_x / fx * z) as f64;
-                            landmark.position[1] -= (rate * error_y / fy * z) as f64;
-                        }
-                    }
+            let num_obs = self.num_observations().max(1) as f64;
+            let pose_lr = 1e-3f64 / num_obs;
+            let point_lr = 1e-3f64 / num_obs;
+
+            // Optimize camera poses
+            for cam_idx in 0..self.cameras.len() {
+                if self.cameras[cam_idx].fix_pose {
+                    continue;
+                }
+
+                let base_pose = self.cameras[cam_idx].pose;
+                let mut grad = [0.0f64; 6];
+                for axis in 0..6 {
+                    self.cameras[cam_idx].pose = Self::perturb_pose(&base_pose, axis, eps_pose as f32);
+                    let plus = self.total_cost();
+
+                    self.cameras[cam_idx].pose = Self::perturb_pose(&base_pose, axis, -(eps_pose as f32));
+                    let minus = self.total_cost();
+
+                    grad[axis] = (plus - minus) / (2.0 * eps_pose);
+                }
+                self.cameras[cam_idx].pose = base_pose;
+
+                let mut update = [0.0f32; 6];
+                for axis in 0..6 {
+                    update[axis] = (-pose_lr * grad[axis]) as f32;
+                }
+                self.cameras[cam_idx].pose = SE3::exp(&update).compose(&base_pose);
+            }
+
+            // Optimize landmark positions
+            for lm_idx in 0..self.landmarks.len() {
+                if self.landmarks[lm_idx].fix_position {
+                    continue;
+                }
+
+                let base = self.landmarks[lm_idx].position;
+                let mut grad = [0.0f64; 3];
+                for axis in 0..3 {
+                    self.landmarks[lm_idx].position[axis] = base[axis] + eps_point;
+                    let plus = self.total_cost();
+
+                    self.landmarks[lm_idx].position[axis] = base[axis] - eps_point;
+                    let minus = self.total_cost();
+
+                    grad[axis] = (plus - minus) / (2.0 * eps_point);
+                    self.landmarks[lm_idx].position[axis] = base[axis];
+                }
+
+                for axis in 0..3 {
+                    self.landmarks[lm_idx].position[axis] -= point_lr * grad[axis];
                 }
             }
         }
@@ -430,6 +469,40 @@ mod tests {
         adjuster.add_observation(0, 0, obs);
         let residual = adjuster.compute_residual();
         assert!(residual < 0.01);
+    }
+
+    #[test]
+    fn test_optimize_updates_camera_pose() {
+        let mut adjuster = BundleAdjuster::new();
+        let initial_pose = SE3::from_axis_angle(&[0.0, 0.0, 0.0], &[0.2, 0.0, 0.0]);
+        let camera = BACamera::new(300.0, 300.0, 160.0, 120.0).with_pose(initial_pose);
+        let cam_idx = adjuster.add_camera(camera);
+
+        let points = vec![
+            [0.0, 0.0, 3.0],
+            [0.2, 0.1, 3.0],
+            [-0.2, -0.1, 3.0],
+            [0.1, -0.2, 3.2],
+        ];
+
+        for p in &points {
+            let lm_idx = adjuster.add_landmark(BALandmark::new(p[0], p[1], p[2]));
+            let u = 300.0 * p[0] / p[2] + 160.0;
+            let v = 300.0 * p[1] / p[2] + 120.0;
+            adjuster.add_observation(cam_idx, lm_idx, BAObservation::new(u, v));
+        }
+
+        let initial_cost = adjuster.total_cost();
+        let (cams, _) = adjuster.optimize(8).unwrap();
+        let final_cost = adjuster.total_cost();
+        let t0 = initial_pose.translation();
+        let t1 = cams[0].pose.translation();
+
+        assert!(final_cost < initial_cost, "BA should reduce reprojection cost");
+        assert!(
+            (t1[0] - t0[0]).abs() > 1e-5 || (t1[1] - t0[1]).abs() > 1e-5 || (t1[2] - t0[2]).abs() > 1e-5,
+            "Camera pose should be updated during optimization"
+        );
     }
 
     #[test]

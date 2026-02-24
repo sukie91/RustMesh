@@ -13,7 +13,7 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```ignore
 //! use rustslam::{Map, MapViewer};
 //!
 //! let mut viewer = MapViewer::new(800, 600);

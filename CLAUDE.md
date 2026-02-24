@@ -76,67 +76,89 @@ Visual SLAM library with sparse feature-based VO and dense 3D Gaussian Splatting
 
 ```
 RustSLAM/src/
+├── cli/               # CLI & pipeline orchestration
+│   ├── mod.rs         # CLI args, run_pipeline(), stage functions
+│   ├── pipeline_checkpoint.rs  # Cross-stage checkpoint management
+│   └── integration_tests.rs   # End-to-end integration tests
+├── io/                # I/O utilities
+│   └── video_decoder.rs  # ffmpeg-next decoder, VideoToolbox HW accel, LRU cache
 ├── core/              # Core data structures
 │   ├── frame.rs       # Frame
-│   ├── keyframe.rs   # KeyFrame
-│   ├── map_point.rs  # MapPoint
-│   ├── map.rs        # Map management
-│   ├── camera.rs     # Camera model
-│   └── pose.rs       # SE3 Pose
+│   ├── keyframe.rs    # KeyFrame
+│   ├── map_point.rs   # MapPoint
+│   ├── map.rs         # Map management
+│   ├── camera.rs      # Camera model
+│   └── pose.rs        # SE3 Pose
 ├── features/          # Feature extraction
-│   ├── orb.rs        # ORB extractor
-│   ├── pure_rust.rs  # Harris/FAST corner detection
-│   ├── matcher.rs    # Feature matching
+│   ├── orb.rs         # ORB extractor
+│   ├── pure_rust.rs   # Harris/FAST corner detection
+│   ├── matcher.rs     # Feature matching
 │   └── knn_matcher.rs
 ├── tracker/           # Visual Odometry
-│   └── vo.rs         # Main VO pipeline
-├── optimizer/        # Bundle Adjustment
+│   └── vo.rs          # Main VO pipeline
+├── optimizer/         # Bundle Adjustment
 │   └── ba.rs
-├── loop_closing/     # Loop Detection
-│   ├── vocabulary.rs # BoW Vocabulary
-│   ├── detector.rs   # Loop Detector
+├── loop_closing/      # Loop Detection
+│   ├── vocabulary.rs  # BoW Vocabulary
+│   ├── detector.rs    # Loop Detector
 │   └── relocalization.rs
-└── fusion/           # 3D Gaussian Splatting
-    ├── gaussian.rs   # Gaussian data structures
-    ├── renderer.rs   # Forward renderer
-    ├── diff_renderer.rs    # Differentiable renderer (CPU)
-    ├── diff_splat.rs       # GPU differentiable splatting
-    ├── autodiff.rs         # True autodiff with backward
-    ├── tiled_renderer.rs   # Tiled rasterization + densify + prune
+├── pipeline/          # Pipeline infrastructure
+│   ├── checkpoint.rs  # SLAM checkpoint save/load
+│   └── realtime.rs    # Multi-threaded realtime pipeline
+└── fusion/            # 3D Gaussian Splatting
+    ├── gaussian.rs    # Gaussian data structures
+    ├── gaussian_init.rs     # Init from SLAM map points
+    ├── diff_renderer.rs     # Differentiable renderer (CPU)
+    ├── diff_splat.rs        # GPU differentiable splatting
+    ├── tiled_renderer.rs    # Tiled rasterization + densify + prune
     ├── training_pipeline.rs # Training with SSIM loss
     ├── complete_trainer.rs  # Complete trainer with LR scheduler
-    ├── autodiff_trainer.rs  # GPU trainer
-    ├── tracker.rs     # Gaussian tracking (ICP)
-    ├── mapper.rs      # Incremental Gaussian mapping
-    ├── slam_integrator.rs  # Sparse + Dense SLAM integration
-    ├── tsdf_volume.rs     # TSDF volume (NEW!)
-    ├── marching_cubes.rs  # Marching Cubes (NEW!)
-    └── mesh_extractor.rs  # High-level mesh extraction (NEW!)
+    ├── slam_integrator.rs   # Sparse + Dense SLAM integration
+    ├── scene_io.rs          # PLY scene save/load
+    ├── training_checkpoint.rs  # Training checkpoint
+    ├── tsdf_volume.rs       # TSDF volume
+    ├── marching_cubes.rs    # Marching Cubes (256-case)
+    ├── mesh_extractor.rs    # High-level mesh extraction API
+    ├── mesh_io.rs           # OBJ/PLY mesh export
+    └── mesh_metadata.rs     # JSON metadata export
 ```
 
 ## Module Status
 
-### RustSLAM Progress (~85%)
+### RustSLAM Progress (~80% functional — Code Review 2026-02-23)
 
 | Feature | Status |
 |---------|--------|
 | SE3 Pose | ✅ |
-| ORB/Harris/FAST | ✅ |
-| Feature Matching | ✅ |
-| Visual Odometry | ✅ |
-| Bundle Adjustment | ✅ |
-| Loop Closing | ✅ |
+| ORB/Harris/FAST | ⚠️ Orientation computed (intensity centroid), but descriptors are raw intensity patches, NOT binary BRIEF |
+| Feature Matching | ⚠️ HammingMatcher has LSH acceleration; KnnMatcher uses wrong distance metric (Euclidean instead of Hamming) |
+| Visual Odometry | ⚠️ DLT-PnP works (mislabeled as P3P), Gauss-Newton refinement functional; 3D points never updated after init; relocalization is stub |
+| Bundle Adjustment | ⚠️ Optimizes both poses and landmarks via finite-difference GD (docs say Gauss-Newton, actually GD) |
+| Loop Closing | ✅ Sim3 rotation via SVD (Umeyama algorithm); BoW uses TF-IDF; hardcoded intrinsics in global BA |
+| Video Input (MP4/MOV/HEVC) | ✅ |
+| Hardware Decoding (VideoToolbox) | ✅ |
+| LRU Frame Cache | ✅ |
+| CLI Infrastructure | ✅ |
+| Config File (TOML) | ✅ |
+| Structured JSON Output | ✅ |
+| Pipeline Checkpoints | ✅ Path traversal protection present |
+| Progress Reporting | ✅ |
 | 3DGS Data Structures | ✅ |
-| Tiled Rasterization | ✅ |
+| Tiled Rasterization | ❌ CPU per-pixel, dist⁴ bug in Gaussian kernel (`tiled_renderer.rs:271`) |
 | Depth Sorting | ✅ |
-| Alpha Blending | ✅ |
-| Gaussian Tracking (ICP) | ✅ |
-| Densification | ✅ |
-| Pruning | ✅ |
-| Candle + Metal GPU | ✅ |
-| True Backward Propagation | ✅ |
-| SLAM Integration | ✅ |
-| **3DGS → Mesh Extraction** | ✅ NEW |
+| Alpha Blending | ✅ Front-to-back alpha compositing with Gaussian kernel (correct in diff_splat.rs) |
+| Gaussian Densification & Pruning | ✅ Gradient accumulation from local depth/color errors |
+| Candle + Metal GPU | ⚠️ GPU used for projection only, rasterization is CPU |
+| Backward Propagation | ✅ Real analytical backward pass (`analytical_backward.rs`), finite-diff fallback available |
+| SLAM Integration | ✅ Framework works, Sim3 rotation fixed |
+| TSDF Volume Fusion | ✅ Division guards present (.max(1e-8)) |
+| Marching Cubes Extraction | ✅ No sqrt bug (previously reported bug was in tiled_renderer, not here) |
+| Mesh Export (OBJ/PLY) | ✅ Correct formats (OBJ 1-based, PLY 0-based) |
+| Mesh Metadata (JSON) | ✅ |
+| End-to-End Integration Tests | ✅ 249/249 lib tests pass, all examples compile |
+| Map Thread Safety | ❌ No Arc/RwLock, non-atomic ID counters |
+| Relocalization | ❌ Stub — returns failure |
+| Config Validation | ❌ No parameter range validation |
 | IMU Integration | ⏳ |
 | Multi-map SLAM | ⏳ |
 
@@ -152,7 +174,7 @@ RustSLAM/src/
 | Subdivision | ⚠️ Loop/CC/√3 |
 | Hole Filling | ✅ |
 | AttribKernel Integration | ⏳ |
-| **3DGS → Mesh** | ✅ (via RustSLAM) |
+| 3DGS → Mesh | ✅ (via RustSLAM) |
 
 ### 3DGS → Mesh Extraction (IMPLEMENTED)
 
@@ -207,11 +229,39 @@ let mesh = extractor.extract_with_postprocessing();
 ## Pipeline
 
 ```
-Camera Input → RustSLAM (VO + Mapping) → 3DGS Fusion → Mesh Extraction → RustMesh Post-processing → Export
-                              ↓                              ↓
-                     RustSLAM/fusion/              tsdf_volume.rs
-                                          + marching_cubes.rs
-                                          + mesh_extractor.rs
+iPhone Video (MP4/MOV/HEVC)
+    ↓ ffmpeg-next + VideoToolbox HW accel + LRU cache
+Frame Extraction
+    ↓
+RustSLAM (VO + Mapping)     → Sparse Map + Camera Poses
+    ↓                              ↓
+Loop Closing              Bundle Adjustment
+    ↓
+3DGS Fusion (Gaussian Splatting)
+    ↓ Metal/MPS GPU, depth constraints, SSIM loss
+Trained 3DGS Scene (scene.ply)
+    ↓
+TSDF Volume Fusion + Marching Cubes
+    ↓
+Mesh Post-processing (cluster filter, normal smooth)
+    ↓
+Export: mesh.obj + mesh.ply + mesh_metadata.json + results.json
 ```
 
-**Complete**: 3DGS → Mesh extraction is now implemented (Pure Rust, PGSR-style).
+**CLI Usage:**
+```bash
+# Full pipeline
+rustscan --input video.mp4 --output ./results
+
+# With config file
+rustscan --config rustscan.toml --input video.mp4
+
+# With debug logging
+rustscan --input video.mp4 --output ./results --log-level debug
+
+# JSON output format
+rustscan --input video.mp4 --output ./results --output-format json
+
+# Run example videos
+./run_examples.sh
+```

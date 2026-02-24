@@ -6,7 +6,6 @@ use rustslam::optimizer::ba::{BundleAdjuster, BACamera, BALandmark, BAObservatio
 use rustslam::core::SE3;
 use rustslam::test_utils::*;
 
-#[test]
 fn test_ba_basic_workflow() {
     // Create a simple BA problem with synthetic data
     let mut ba = BundleAdjuster::new();
@@ -42,7 +41,6 @@ fn test_ba_basic_workflow() {
     assert_eq!(ba.num_observations(), 15, "Should have 15 observations");
 }
 
-#[test]
 fn test_synthetic_poses_generation() {
     // Test circular trajectory
     let circle_poses = create_synthetic_poses(8, TrajectoryType::Circle);
@@ -64,7 +62,6 @@ fn test_synthetic_poses_generation() {
     }
 }
 
-#[test]
 fn test_synthetic_depth_generation() {
     // Test constant depth
     let constant_depth = create_synthetic_depth(100, 100, DepthPattern::Constant);

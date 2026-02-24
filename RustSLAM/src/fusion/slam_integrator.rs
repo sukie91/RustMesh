@@ -226,8 +226,10 @@ impl SparseDenseSlam {
                 depth.clone(),
                 self.renderer.width,
                 self.renderer.height,
-                500.0, 500.0,  // Default intrinsics
-                320.0, 240.0,
+                self.fx,
+                self.fy,
+                self.cx,
+                self.cy,
             );
             self.keyframes.push(kf);
         }
@@ -327,10 +329,10 @@ impl SparseDenseSlam {
 
         self.renderer.render(
             &self.gaussians,
-            500.0,
-            500.0,
-            320.0,
-            240.0,
+            self.fx,
+            self.fy,
+            self.cx,
+            self.cy,
             &rot,
             &trans,
         )

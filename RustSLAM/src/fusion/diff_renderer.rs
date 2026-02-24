@@ -6,6 +6,8 @@
 use candle_core::{Tensor, Device, DType, Shape};
 use std::sync::Arc;
 
+use crate::fusion::tiled_renderer::{Gaussian, RenderBuffer, TiledRenderer};
+
 /// Gaussian parameters as tensors (for GPU computation)
 pub struct GaussianTensors {
     /// Positions: [N, 3]
@@ -103,6 +105,8 @@ pub struct DiffGaussianRenderer {
     width: usize,
     /// Image height
     height: usize,
+    /// CPU tiled renderer for rasterization
+    tiled_renderer: TiledRenderer,
 }
 
 impl DiffGaussianRenderer {
@@ -113,12 +117,22 @@ impl DiffGaussianRenderer {
         
         println!("Using device: {:?}", device);
         
-        Self { device, width, height }
+        Self {
+            device,
+            width,
+            height,
+            tiled_renderer: TiledRenderer::new(width, height),
+        }
     }
 
     /// Create renderer with explicit device
     pub fn with_device(width: usize, height: usize, device: Device) -> Self {
-        Self { device, width, height }
+        Self {
+            device,
+            width,
+            height,
+            tiled_renderer: TiledRenderer::new(width, height),
+        }
     }
 
     /// Get the device
@@ -132,35 +146,14 @@ impl DiffGaussianRenderer {
     pub fn render_color(
         &self,
         gaussians: &GaussianTensors,
-        _camera: &CameraTensors,
+        camera: &CameraTensors,
     ) -> candle_core::Result<Tensor> {
-        if gaussians.is_empty() {
-            return Ok(Tensor::zeros(
-                (self.height, self.width, 3),
-                DType::F32,
-                &self.device,
-            )?);
-        }
-
-        // Simplified differentiable rendering
-        // In practice, this would use tiled rasterization
-        
-        // Compute average color (simplified placeholder)
-        let n = gaussians.n as f32;
-        let n_tensor = Tensor::from_slice(&[n], (1,), &self.device)?;
-        let avg_color = (gaussians.colors.sum(0)? / n_tensor)?;
-        
-        // For full implementation, we would do proper splatting
-        // Here we just return the average as a placeholder
-        
-        // Expand to full image (simplified)
-        let mut output = Tensor::zeros(
+        let render = self.render_tiled(gaussians, camera)?;
+        Tensor::from_slice(
+            &render.color,
             (self.height, self.width, 3),
-            DType::F32,
             &self.device,
-        )?;
-
-        Ok(output)
+        )
     }
 
     /// Render Gaussians to depth image (differentiable)
@@ -169,29 +162,14 @@ impl DiffGaussianRenderer {
     pub fn render_depth(
         &self,
         gaussians: &GaussianTensors,
-        _camera: &CameraTensors,
+        camera: &CameraTensors,
     ) -> candle_core::Result<Tensor> {
-        if gaussians.is_empty() {
-            return Ok(Tensor::zeros(
-                (self.height, self.width),
-                DType::F32,
-                &self.device,
-            )?);
-        }
-
-        // Compute average depth (simplified)
-        // Take z component of positions
-        let positions = &gaussians.positions;
-        // This is a simplified placeholder
-        let avg_z = positions.sum(0)?.zeros_like()?;
-        
-        let mut depth = Tensor::zeros(
+        let render = self.render_tiled(gaussians, camera)?;
+        Tensor::from_slice(
+            &render.depth,
             (self.height, self.width),
-            DType::F32,
             &self.device,
-        )?;
-
-        Ok(depth)
+        )
     }
 
     /// Compute loss between rendered and observed images (L1)
@@ -256,6 +234,122 @@ impl DiffGaussianRenderer {
             rendered_color,
             rendered_depth,
         })
+    }
+}
+
+impl DiffGaussianRenderer {
+    fn render_tiled(
+        &self,
+        gaussians: &GaussianTensors,
+        camera: &CameraTensors,
+    ) -> candle_core::Result<RenderBuffer> {
+        if gaussians.is_empty() {
+            return Ok(RenderBuffer::new(self.width, self.height));
+        }
+
+        let gaussians = tensors_to_gaussians(gaussians)?;
+        let rotation = tensor_to_rotation(&camera.rotation)?;
+        let translation = tensor_to_vec3(&camera.translation)?;
+
+        Ok(self.tiled_renderer.render(
+            &gaussians,
+            camera.intrinsics[0],
+            camera.intrinsics[1],
+            camera.intrinsics[2],
+            camera.intrinsics[3],
+            &rotation,
+            &translation,
+        ))
+    }
+}
+
+fn tensors_to_gaussians(gaussians: &GaussianTensors) -> candle_core::Result<Vec<Gaussian>> {
+    let positions = gaussians.positions.to_vec2::<f32>()?;
+    let scales = gaussians.scales.to_vec2::<f32>()?;
+    let rotations = gaussians.rotations.to_vec2::<f32>()?;
+    let opacities = gaussians.opacities.to_vec1::<f32>()?;
+    let colors = gaussians.colors.to_vec2::<f32>()?;
+
+    let positions: Vec<f32> = positions.into_iter().flatten().collect();
+    let scales: Vec<f32> = scales.into_iter().flatten().collect();
+    let rotations: Vec<f32> = rotations.into_iter().flatten().collect();
+    let colors: Vec<f32> = colors.into_iter().flatten().collect();
+
+    let mut output = Vec::with_capacity(gaussians.n);
+    for i in 0..gaussians.n {
+        let p = i * 3;
+        let r = i * 4;
+        let c = i * 3;
+        output.push(Gaussian::new(
+            [positions[p], positions[p + 1], positions[p + 2]],
+            [scales[p], scales[p + 1], scales[p + 2]],
+            [rotations[r], rotations[r + 1], rotations[r + 2], rotations[r + 3]],
+            opacities[i],
+            [colors[c], colors[c + 1], colors[c + 2]],
+        ));
+    }
+
+    Ok(output)
+}
+
+fn tensor_to_rotation(tensor: &Tensor) -> candle_core::Result<[[f32; 3]; 3]> {
+    let data = tensor.flatten_all()?.to_vec1::<f32>()?;
+    Ok([
+        [data[0], data[1], data[2]],
+        [data[3], data[4], data[5]],
+        [data[6], data[7], data[8]],
+    ])
+}
+
+fn tensor_to_vec3(tensor: &Tensor) -> candle_core::Result<[f32; 3]> {
+    let data = tensor.to_vec1::<f32>()?;
+    Ok([data[0], data[1], data[2]])
+}
+
+#[cfg(test)]
+mod tiled_tests {
+    use super::*;
+
+    #[test]
+    fn test_diff_renderer_tiled_output() {
+        let renderer = DiffGaussianRenderer::new(8, 8);
+        let device = renderer.device().clone();
+
+        let positions = vec![0.0f32, 0.0, 1.0];
+        let scales = vec![0.05f32, 0.05, 0.05];
+        let rotations = vec![1.0f32, 0.0, 0.0, 0.0];
+        let opacities = vec![0.8f32];
+        let colors = vec![1.0f32, 0.0, 0.0];
+
+        let gaussians = GaussianTensors::new(
+            &positions,
+            &scales,
+            &rotations,
+            &opacities,
+            &colors,
+            &device,
+        ).unwrap();
+
+        let rotation = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let translation = [0.0, 0.0, 0.0];
+        let camera = CameraTensors::new(
+            500.0, 500.0, 4.0, 4.0,
+            &rotation,
+            &translation,
+            8,
+            8,
+            &device,
+        ).unwrap();
+
+        let color = renderer.render_color(&gaussians, &camera).unwrap();
+        let depth = renderer.render_depth(&gaussians, &camera).unwrap();
+
+        assert_eq!(color.dims(), &[8, 8, 3]);
+        assert_eq!(depth.dims(), &[8, 8]);
     }
 }
 

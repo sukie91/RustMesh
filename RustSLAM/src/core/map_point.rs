@@ -11,6 +11,8 @@ pub struct MapPoint {
     pub position: Vec3,
     /// Normal direction (optional)
     pub normal: Option<Vec3>,
+    /// Optional color (normalized RGB, used for Gaussian initialization)
+    pub color: Option<[f32; 3]>,
     /// Reference keyframe ID
     pub reference_kf: u64,
     /// Number of observed from keyframes
@@ -26,6 +28,7 @@ impl MapPoint {
             id,
             position,
             normal: None,
+            color: None,
             reference_kf,
             observations: 1,
             is_outlier: false,
@@ -50,5 +53,23 @@ impl MapPoint {
     /// Set normal direction
     pub fn set_normal(&mut self, normal: Vec3) {
         self.normal = Some(normal);
+    }
+
+    /// Set color from normalized RGB
+    pub fn set_color(&mut self, color: [f32; 3]) {
+        self.color = Some([
+            color[0].clamp(0.0, 1.0),
+            color[1].clamp(0.0, 1.0),
+            color[2].clamp(0.0, 1.0),
+        ]);
+    }
+
+    /// Set color from 8-bit RGB
+    pub fn set_color_u8(&mut self, color: [u8; 3]) {
+        self.set_color([
+            color[0] as f32 / 255.0,
+            color[1] as f32 / 255.0,
+            color[2] as f32 / 255.0,
+        ]);
     }
 }

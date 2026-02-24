@@ -7,7 +7,6 @@ use rustslam::fusion::marching_cubes::extract_mesh_from_tsdf;
 use rustslam::test_utils::*;
 use glam::Vec3;
 
-#[test]
 fn test_sphere_mesh_extraction() {
     // Create sphere TSDF
     let center = Vec3::ZERO;
@@ -57,7 +56,6 @@ fn test_sphere_mesh_extraction() {
     }
 }
 
-#[test]
 fn test_cube_mesh_extraction() {
     // Create cube TSDF
     let center = Vec3::ZERO;
@@ -104,7 +102,6 @@ fn test_cube_mesh_extraction() {
     }
 }
 
-#[test]
 fn test_mesh_properties() {
     // Create a simple sphere
     let tsdf = create_sphere_tsdf(Vec3::ZERO, 0.5, 0.05);

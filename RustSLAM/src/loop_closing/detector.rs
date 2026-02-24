@@ -4,6 +4,9 @@
 
 use crate::core::{Map, KeyFrame, SE3};
 use crate::features::Match;
+use crate::features::base::ORB_DESCRIPTOR_SIZE;
+use nalgebra::{Matrix3, Vector3};
+use std::collections::HashMap;
 
 /// A loop candidate detected between frames
 #[derive(Debug, Clone)]
@@ -128,6 +131,11 @@ impl LoopDetector {
         self.min_matches = matches;
     }
 
+    /// Get minimum matches
+    pub fn min_matches(&self) -> usize {
+        self.min_matches
+    }
+
     /// Compute BoW similarity between two descriptors
     /// 
     /// This is a simplified BoW implementation using
@@ -137,39 +145,73 @@ impl LoopDetector {
             return 0.0;
         }
 
-        // Simplified: use average Hamming distance similarity
-        let descriptor_size = 32; // ORB descriptor size
-        let n = (query.len() / descriptor_size).min(train.len() / descriptor_size);
-        
-        if n == 0 {
+        if query.len() < ORB_DESCRIPTOR_SIZE || train.len() < ORB_DESCRIPTOR_SIZE {
             return 0.0;
         }
 
-        let mut total_dist = 0.0f32;
-        let mut count = 0usize;
+        let mut q_tf: HashMap<u32, f32> = HashMap::new();
+        let mut t_tf: HashMap<u32, f32> = HashMap::new();
+        let mut q_total = 0.0f32;
+        let mut t_total = 0.0f32;
 
-        for i in 0..n {
-            let q_start = i * descriptor_size;
-            let t_start = i * descriptor_size;
-            
-            if q_start + descriptor_size <= query.len() && t_start + descriptor_size <= train.len() {
-                let q_desc = &query[q_start..q_start + descriptor_size];
-                let t_desc = &train[t_start..t_start + descriptor_size];
-                
-                let dist = hamming_distance(q_desc, t_desc);
-                total_dist += dist;
-                count += 1;
+        for desc in query.chunks_exact(ORB_DESCRIPTOR_SIZE) {
+            let word = descriptor_to_word(desc);
+            *q_tf.entry(word).or_insert(0.0) += 1.0;
+            q_total += 1.0;
+        }
+        for desc in train.chunks_exact(ORB_DESCRIPTOR_SIZE) {
+            let word = descriptor_to_word(desc);
+            *t_tf.entry(word).or_insert(0.0) += 1.0;
+            t_total += 1.0;
+        }
+        if q_total == 0.0 || t_total == 0.0 {
+            return 0.0;
+        }
+
+        for v in q_tf.values_mut() {
+            *v /= q_total;
+        }
+        for v in t_tf.values_mut() {
+            *v /= t_total;
+        }
+
+        let mut dot = 0.0f32;
+        let mut q_norm = 0.0f32;
+        let mut t_norm = 0.0f32;
+
+        for (&word, &q_tf_word) in &q_tf {
+            let mut df = 0.0f32;
+            if q_tf.contains_key(&word) {
+                df += 1.0;
             }
+            if t_tf.contains_key(&word) {
+                df += 1.0;
+            }
+            let idf = ((1.0 + 2.0) / (1.0 + df)).ln() + 1.0;
+            let qw = q_tf_word * idf;
+            let tw = t_tf.get(&word).copied().unwrap_or(0.0) * idf;
+            dot += qw * tw;
+            q_norm += qw * qw;
         }
 
-        if count == 0 {
-            return 0.0;
+        for (&word, &t_tf_word) in &t_tf {
+            let mut df = 0.0f32;
+            if q_tf.contains_key(&word) {
+                df += 1.0;
+            }
+            if t_tf.contains_key(&word) {
+                df += 1.0;
+            }
+            let idf = ((1.0 + 2.0) / (1.0 + df)).ln() + 1.0;
+            let tw = t_tf_word * idf;
+            t_norm += tw * tw;
         }
 
-        let avg_dist = total_dist / count as f32;
-        // Max ORB distance is 256 (32 bytes * 8 bits)
-        let max_dist = 256.0;
-        (max_dist - avg_dist.min(max_dist)) / max_dist
+        if q_norm <= 1e-8 || t_norm <= 1e-8 {
+            0.0
+        } else {
+            (dot / (q_norm.sqrt() * t_norm.sqrt())).clamp(0.0, 1.0)
+        }
     }
 
     /// Compute loop candidates for a given frame
@@ -230,34 +272,42 @@ impl LoopDetector {
         candidates: &[LoopCandidate],
         current_frame_id: u64,
     ) -> Vec<LoopCandidate> {
-        let mut consistent = Vec::new();
+        let mut filtered: Vec<LoopCandidate> = candidates
+            .iter()
+            .filter(|candidate| {
+                let distance = current_frame_id.saturating_sub(candidate.keyframe_id);
+                distance >= self.min_distance
+            })
+            .cloned()
+            .collect();
 
-        for candidate in candidates {
-            // Check minimum distance
-            let distance = current_frame_id.saturating_sub(candidate.keyframe_id);
-            if distance < self.min_distance {
-                continue;
-            }
-
-            // Check time gap
-            // Note: In real implementation, we'd compare timestamps properly
-
-            // Check consistency with recent loops
-            let mut is_consistent = true;
-            for recent_id in &self.recent_loops {
-                // If we've seen a loop with this keyframe recently, it's consistent
-                if *recent_id == candidate.keyframe_id {
-                    is_consistent = false;
-                    break;
-                }
-            }
-
-            if is_consistent {
-                consistent.push(candidate.clone());
-            }
+        if filtered.is_empty() {
+            return filtered;
         }
 
-        consistent
+        filtered.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Bootstrap: when no confirmed loops exist yet, keep only the strongest candidate.
+        if self.recent_loops.is_empty() {
+            filtered.truncate(1);
+            return filtered;
+        }
+
+        let warmup = self.recent_loops.len() < self.consistency_threshold;
+        let neighbor_window = (self.min_distance / 2).max(5);
+        let strong_score = (self.min_loop_score * 1.5).min(0.9);
+
+        filtered
+            .into_iter()
+            .filter(|candidate| {
+                let near_recent = self
+                    .recent_loops
+                    .iter()
+                    .any(|&recent_id| recent_id.abs_diff(candidate.keyframe_id) <= neighbor_window);
+
+                near_recent || (warmup && candidate.score >= strong_score)
+            })
+            .collect()
     }
 
     /// Add a confirmed loop to recent history
@@ -350,69 +400,60 @@ pub fn compute_sim3_from_matches(
         centroid2[j] /= n;
     }
 
-    // Compute scale (ratio of distances from centroids)
-    let mut d1 = 0.0f32;
-    let mut d2 = 0.0f32;
-    
+    // Umeyama alignment: estimate Sim3 with SVD
+    let mut sigma = Matrix3::<f32>::zeros();
+    let mut var1 = 0.0f32;
+    let n = points1.len() as f32;
+
     for i in 0..points1.len() {
-        let diff1 = [
+        let p1 = Vector3::new(
             points1[i][0] - centroid1[0],
             points1[i][1] - centroid1[1],
             points1[i][2] - centroid1[2],
-        ];
-        let diff2 = [
+        );
+        let p2 = Vector3::new(
             points2[i][0] - centroid2[0],
             points2[i][1] - centroid2[1],
             points2[i][2] - centroid2[2],
-        ];
-        d1 += diff1[0] * diff1[0] + diff1[1] * diff1[1] + diff1[2] * diff1[2];
-        d2 += diff2[0] * diff2[0] + diff2[1] * diff2[1] + diff2[2] * diff2[2];
+        );
+        sigma += p2 * p1.transpose();
+        var1 += p1.dot(&p1);
     }
 
-    let scale = if d2 > 1e-10 { (d1 / d2).sqrt() } else { 1.0 };
-
-    // Compute rotation using cross-covariance matrix
-    let mut h = [[0.0f32; 3]; 3];
-    
-    for i in 0..points1.len() {
-        let p1 = [
-            points1[i][0] - centroid1[0],
-            points1[i][1] - centroid1[1],
-            points1[i][2] - centroid1[2],
-        ];
-        let p2 = [
-            points2[i][0] - centroid2[0],
-            points2[i][1] - centroid2[1],
-            points2[i][2] - centroid2[2],
-        ];
-        
-        for r in 0..3 {
-            for c in 0..3 {
-                h[r][c] += p1[r] * p2[c];
-            }
-        }
+    sigma /= n;
+    var1 /= n;
+    if var1 < 1e-8 {
+        return None;
     }
 
-    // SVD would be used here to find optimal rotation
-    // For now, return identity rotation if H is well-conditioned
-    let det = h[0][0] * (h[1][1] * h[2][2] - h[1][2] * h[2][1])
-        - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0])
-        + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0]);
+    let svd = sigma.svd(true, true);
+    let u = svd.u?;
+    let v_t = svd.v_t?;
+    let mut s = Matrix3::<f32>::identity();
+    if (u * v_t).determinant() < 0.0 {
+        s[(2, 2)] = -1.0;
+    }
 
-    // Allow any non-zero determinant (not too strict)
-    let rotation = if det.abs() < 1e-10 {
-        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-    } else {
-        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-    };
+    let r = u * s * v_t;
+    let s_mat = Matrix3::from_diagonal(&svd.singular_values);
+    let scale = (s_mat * s).trace() / var1;
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+
+    let c1 = Vector3::new(centroid1[0], centroid1[1], centroid1[2]);
+    let c2 = Vector3::new(centroid2[0], centroid2[1], centroid2[2]);
+    let t = c2 - scale * (r * c1);
+
+    let rotation = [
+        [r[(0, 0)], r[(0, 1)], r[(0, 2)]],
+        [r[(1, 0)], r[(1, 1)], r[(1, 2)]],
+        [r[(2, 0)], r[(2, 1)], r[(2, 2)]],
+    ];
 
     Some(Sim3 {
         rotation,
-        translation: [
-            centroid2[0] - scale * centroid1[0],
-            centroid2[1] - scale * centroid1[1],
-            centroid2[2] - scale * centroid1[2],
-        ],
+        translation: [t[0], t[1], t[2]],
         scale,
     })
 }
@@ -423,6 +464,16 @@ fn hamming_distance(a: &[u8], b: &[u8]) -> f32 {
         .zip(b.iter())
         .map(|(x, y)| (*x ^ *y).count_ones() as f32)
         .sum()
+}
+
+fn descriptor_to_word(desc: &[u8]) -> u32 {
+    // FNV-1a hash on prefix bytes for coarse visual-word assignment.
+    let mut hash: u32 = 2166136261;
+    for &b in desc.iter().take(8) {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    hash & 0x0FFF
 }
 
 #[cfg(test)]
@@ -495,5 +546,67 @@ mod tests {
         
         let result = compute_sim3_from_matches(&points1, &points2);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_loop_consistency_bootstrap_keeps_strongest() {
+        let detector = LoopDetector::new();
+        let candidates = vec![
+            LoopCandidate { keyframe_id: 10, score: 0.9, timestamp: 1.0 },
+            LoopCandidate { keyframe_id: 20, score: 0.7, timestamp: 2.0 },
+            LoopCandidate { keyframe_id: 30, score: 0.6, timestamp: 3.0 },
+        ];
+
+        let consistent = detector.compute_loop_consistency(&candidates, 100);
+        assert_eq!(consistent.len(), 1);
+        assert_eq!(consistent[0].keyframe_id, 10);
+    }
+
+    #[test]
+    fn test_loop_consistency_prefers_recent_neighbors() {
+        let mut detector = LoopDetector::new();
+        detector.add_confirmed_loop(25);
+
+        let candidates = vec![
+            LoopCandidate { keyframe_id: 24, score: 0.06, timestamp: 1.0 },
+            LoopCandidate { keyframe_id: 80, score: 0.06, timestamp: 2.0 },
+        ];
+
+        let consistent = detector.compute_loop_consistency(&candidates, 200);
+        assert_eq!(consistent.len(), 1);
+        assert_eq!(consistent[0].keyframe_id, 24);
+    }
+
+    #[test]
+    fn test_loop_consistency_warmup_allows_strong_outlier() {
+        let mut detector = LoopDetector::new();
+        detector.add_confirmed_loop(25);
+
+        let candidates = vec![LoopCandidate {
+            keyframe_id: 120,
+            score: 0.3,
+            timestamp: 1.0,
+        }];
+
+        let consistent = detector.compute_loop_consistency(&candidates, 300);
+        assert_eq!(consistent.len(), 1);
+        assert_eq!(consistent[0].keyframe_id, 120);
+    }
+
+    #[test]
+    fn test_loop_consistency_after_warmup_requires_history_neighbor() {
+        let mut detector = LoopDetector::new();
+        detector.add_confirmed_loop(10);
+        detector.add_confirmed_loop(40);
+        detector.add_confirmed_loop(70);
+
+        let candidates = vec![
+            LoopCandidate { keyframe_id: 72, score: 0.1, timestamp: 1.0 },
+            LoopCandidate { keyframe_id: 130, score: 0.9, timestamp: 2.0 },
+        ];
+
+        let consistent = detector.compute_loop_consistency(&candidates, 250);
+        assert_eq!(consistent.len(), 1);
+        assert_eq!(consistent[0].keyframe_id, 72);
     }
 }

@@ -565,7 +565,11 @@ pub fn extract_mesh_from_tsdf(volume: &TsdfVolume) -> Mesh {
     let mc = MarchingCubes::new(config.voxel_size, config.min_bound);
 
     mc.extract_mesh(dims, |x, y, z| {
-        volume.get_voxel(x, y, z).map(|v| (v.tsdf, v.color))
+        let (tsdf, color) = volume
+            .get_voxel(x, y, z)
+            .map(|v| (v.tsdf, v.color))
+            .unwrap_or((1.0, [0.0, 0.0, 0.0]));
+        Some((tsdf, color))
     })
 }
 
@@ -708,5 +712,109 @@ mod tests {
         // Empty volume should produce no mesh
         assert_eq!(mesh.vertices.len(), 0, "Empty volume should have no vertices");
         assert_eq!(mesh.triangles.len(), 0, "Empty volume should have no triangles");
+    }
+
+    #[test]
+    fn test_sparse_voxels_still_extract() {
+        let config = TsdfConfig {
+            voxel_size: 1.0,
+            sdf_trunc: 3.0,
+            min_bound: Vec3::ZERO,
+            max_bound: Vec3::new(2.0, 2.0, 2.0),
+            max_weight: 1.0,
+            integration_weight: 1.0,
+        };
+        let mut volume = TsdfVolume::new(config);
+        let voxel = volume.get_voxel_mut(0, 0, 0);
+        voxel.tsdf = -0.5;
+        voxel.weight = 1.0;
+
+        let mesh = extract_mesh_from_tsdf(&volume);
+        assert!(
+            !mesh.triangles.is_empty(),
+            "Sparse voxel grid should still extract triangles"
+        );
+    }
+
+    fn run_single_cube(case_index: u8) -> Mesh {
+        let voxel_size = 1.0;
+        let min_bound = Vec3::ZERO;
+        let mc = MarchingCubes::new(voxel_size, min_bound);
+
+        let dims = (2, 2, 2);
+        let mut cube_values = [1.0f32; 8];
+        for i in 0..8 {
+            if (case_index & (1 << i)) != 0 {
+                cube_values[i] = -1.0;
+            }
+        }
+
+        mc.extract_mesh(dims, move |x, y, z| {
+            if x == 0 && y == 0 && z == 0 {
+                Some((cube_values[0], [1.0, 0.0, 0.0]))
+            } else if x == 1 && y == 0 && z == 0 {
+                Some((cube_values[1], [0.0, 1.0, 0.0]))
+            } else if x == 0 && y == 1 && z == 0 {
+                Some((cube_values[2], [0.0, 0.0, 1.0]))
+            } else if x == 1 && y == 1 && z == 0 {
+                Some((cube_values[3], [1.0, 1.0, 0.0]))
+            } else if x == 0 && y == 0 && z == 1 {
+                Some((cube_values[4], [1.0, 0.0, 1.0]))
+            } else if x == 1 && y == 0 && z == 1 {
+                Some((cube_values[5], [0.0, 1.0, 1.0]))
+            } else if x == 0 && y == 1 && z == 1 {
+                Some((cube_values[6], [0.5, 0.5, 0.5]))
+            } else if x == 1 && y == 1 && z == 1 {
+                Some((cube_values[7], [0.25, 0.75, 0.25]))
+            } else {
+                None
+            }
+        })
+    }
+
+    #[test]
+    fn test_all_cases_vertices_and_triangles_are_consistent() {
+        for case_index in 0u8..=255u8 {
+            let mesh = run_single_cube(case_index);
+            for tri in &mesh.triangles {
+                assert!(tri.indices.len() == 3);
+                for &idx in &tri.indices {
+                    assert!(idx < mesh.vertices.len(), "Triangle index out of bounds for case {}", case_index);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_case_single_triangle_exact_edges() {
+        let case_index = 1u8;
+        let mesh = run_single_cube(case_index);
+
+        assert_eq!(mesh.triangles.len(), 1, "Case 1 should generate exactly one triangle");
+        assert_eq!(mesh.vertices.len(), 3, "Case 1 should have exactly three vertices");
+
+        let tri = &mesh.triangles[0];
+        let v0 = mesh.vertices[tri.indices[0]].position;
+        let v1 = mesh.vertices[tri.indices[1]].position;
+        let v2 = mesh.vertices[tri.indices[2]].position;
+
+        for v in [v0, v1, v2] {
+            assert!(v.x >= 0.0 && v.x <= 1.0);
+            assert!(v.y >= 0.0 && v.y <= 1.0);
+            assert!(v.z >= 0.0 && v.z <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_all_vertices_within_unit_cube() {
+        for case_index in 0u8..=255u8 {
+            let mesh = run_single_cube(case_index);
+            for vertex in &mesh.vertices {
+                let p = vertex.position;
+                assert!(p.x >= 0.0 && p.x <= 1.0, "x out of bounds for case {}: {}", case_index, p.x);
+                assert!(p.y >= 0.0 && p.y <= 1.0, "y out of bounds for case {}: {}", case_index, p.y);
+                assert!(p.z >= 0.0 && p.z <= 1.0, "z out of bounds for case {}: {}", case_index, p.z);
+            }
+        }
     }
 }

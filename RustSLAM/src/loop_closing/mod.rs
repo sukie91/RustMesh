@@ -7,6 +7,7 @@ pub mod detector;
 pub mod database;
 pub mod relocalization;
 pub mod optimized_detector;
+pub mod closing;
 
 pub use vocabulary::{Vocabulary, Word, hamming_distance, kmeans};
 pub use detector::{LoopDetector, LoopCandidate, LoopDetectionResult};
@@ -16,3 +17,4 @@ pub use optimized_detector::{
     InvertedIndex, GeometricVerifier, DescriptorDistance,
     OptimizedLoopDetectorConfig,
 };
+pub use closing::LoopClosing;
