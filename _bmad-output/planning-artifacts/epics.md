@@ -15,10 +15,10 @@ This document provides the complete epic and story breakdown for RustScan, decom
 - ✅ Epic 1: CLI Infrastructure & Configuration (6/6 stories complete)
 - ✅ Epic 2: Video Input & Decoding (3/3 stories complete)
 - ⚠️ Epic 3: SLAM Processing Pipeline (6/11 stories done, 5 new fix stories from code review: ORB BRIEF, KnnMatcher, relocalization, VO 3D points, PnP fallback)
-- ⚠️ Epic 4: 3DGS Training & Scene Generation (4/7 stories done, 2 in-progress, 1 new fix story: tiled_renderer dist bug)
+- ⚠️ Epic 4: 3DGS Training & Scene Generation (5/7 stories done, 2 in-progress: GPU rasterization, depth loss; analytical backward pass added)
 - ✅ Epic 5: Mesh Extraction & Export (5/5 stories complete)
 - ✅ Epic 6: End-to-End Pipeline Integration (5/5 stories complete, 249/249 lib tests pass)
-- 🆕 Epic 7: Cross-Cutting Infrastructure Fixes (0/3 stories: Map thread safety, camera intrinsics, config validation)
+- 🆕 Epic 7: Cross-Cutting Infrastructure Fixes (3/3 stories done: Map thread safety partial, camera intrinsics unified, config validation added)
 
 **Overall Progress:** 29/40 stories done (~73%), 2 in-progress, 9 backlog. 249/249 lib tests pass. All examples compile.
 
