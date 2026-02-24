@@ -150,16 +150,14 @@ impl DiffCamera {
         translation: &[f32; 3],
         device: &Device,
     ) -> candle_core::Result<Self> {
-        // Build 3x4 extrinsics matrix [R|t]
+        // Build 3x4 extrinsics matrix [R|t] in row-major order
         let mut ext = [0.0f32; 12];
         for i in 0..3 {
-            ext[i * 3] = rotation[i][0];
-            ext[i * 3 + 1] = rotation[i][1];
-            ext[i * 3 + 2] = rotation[i][2];
+            ext[i * 4] = rotation[i][0];
+            ext[i * 4 + 1] = rotation[i][1];
+            ext[i * 4 + 2] = rotation[i][2];
+            ext[i * 4 + 3] = translation[i];
         }
-        ext[9] = translation[0];
-        ext[10] = translation[1];
-        ext[11] = translation[2];
 
         Ok(Self {
             fx,
@@ -208,10 +206,18 @@ impl DiffSplatRenderer {
         _rotations: &Tensor,   // [N, 4]
         camera: &DiffCamera,
     ) -> candle_core::Result<ProjectedGaussiansTensor> {
-        // Extract x, y, z
-        let x = positions.narrow(1, 0, 1)?.squeeze(1)?;
-        let y = positions.narrow(1, 1, 1)?.squeeze(1)?;
-        let z = positions.narrow(1, 2, 1)?.squeeze(1)?;
+        // Apply camera extrinsics: p_cam = R * p_world + t
+        // extrinsics is [3, 4] = [R|t], positions is [N, 3]
+        let rot = camera.extrinsics.narrow(1, 0, 3)?;  // [3, 3]
+        let trans = camera.extrinsics.narrow(1, 3, 1)?.squeeze(1)?;  // [3]
+
+        // p_cam = positions @ R^T + t  (equivalent to R * p for each point)
+        let cam_pos = positions.matmul(&rot.t()?)?.broadcast_add(&trans.unsqueeze(0)?)?;  // [N, 3]
+
+        // Extract x, y, z in camera space
+        let x = cam_pos.narrow(1, 0, 1)?.squeeze(1)?;
+        let y = cam_pos.narrow(1, 1, 1)?.squeeze(1)?;
+        let z = cam_pos.narrow(1, 2, 1)?.squeeze(1)?;
 
         // Create scalar tensors for intrinsics
         let fx = Tensor::from_slice(&[camera.fx], (1,), &self.device)?;
@@ -1174,5 +1180,70 @@ mod tests {
         let out_color = output.color.to_vec3::<f32>().unwrap();
         let has_color = out_color.iter().flatten().flatten().any(|&v| v > 0.01);
         assert!(has_color, "render_with_intermediates should produce visible output");
+    }
+
+    #[test]
+    fn test_diff_camera_extrinsics_matrix_layout() {
+        let device = Device::Cpu;
+        let rotation = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let translation = [10.0, 11.0, 12.0];
+        let cam = DiffCamera::new(
+            500.0, 500.0, 320.0, 240.0, 640, 480,
+            &rotation, &translation, &device,
+        ).unwrap();
+
+        // Extrinsics should be [3, 4] = [R|t] in row-major order
+        let ext = cam.extrinsics.to_vec2::<f32>().unwrap();
+        assert_eq!(ext.len(), 3);
+        assert_eq!(ext[0], vec![1.0, 2.0, 3.0, 10.0]);
+        assert_eq!(ext[1], vec![4.0, 5.0, 6.0, 11.0]);
+        assert_eq!(ext[2], vec![7.0, 8.0, 9.0, 12.0]);
+    }
+
+    #[test]
+    fn test_extrinsics_affect_projection() {
+        let device = Device::Cpu;
+        let renderer = DiffSplatRenderer::with_device(64, 64, device.clone());
+
+        // Single Gaussian at world origin
+        let gaussians = TrainableGaussians::new(
+            &[0.0, 0.0, 0.0],
+            &[-2.0, -2.0, -2.0],
+            &[1.0, 0.0, 0.0, 0.0],
+            &[0.8],
+            &[1.0, 0.0, 0.0],
+            &device,
+        ).unwrap();
+
+        // Camera with identity rotation but translation [0, 0, -5]
+        // moves camera back, so point at origin is at z=5 in camera space
+        let cam = DiffCamera::new(
+            500.0, 500.0, 32.0, 32.0, 64, 64,
+            &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            &[0.0, 0.0, -5.0],
+            &device,
+        ).unwrap();
+
+        // With extrinsics applied: p_cam = R*p + t = [0,0,0] + [0,0,-5] = [0,0,-5]
+        // z=-5 is behind camera, should produce no visible output
+        let output = renderer.render(&gaussians, &cam).unwrap();
+        let color = output.color.to_vec3::<f32>().unwrap();
+        let has_color = color.iter().flatten().flatten().any(|&v| v > 0.01);
+        assert!(!has_color, "Point behind camera (z<0) should not be visible");
+
+        // Camera translated to [0, 0, 5] — point at z=-5 in camera space (still behind)
+        // But camera at [0, 0, -3] with identity R: p_cam = [0,0,0] + [0,0,-3] = [0,0,-3] (behind)
+        // Camera at [0, 0, 3]: p_cam = [0,0,0] + [0,0,3] = [0,0,3] (in front!)
+        let cam_front = DiffCamera::new(
+            500.0, 500.0, 32.0, 32.0, 64, 64,
+            &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            &[0.0, 0.0, 3.0],
+            &device,
+        ).unwrap();
+
+        let output2 = renderer.render(&gaussians, &cam_front).unwrap();
+        let color2 = output2.color.to_vec3::<f32>().unwrap();
+        let has_color2 = color2.iter().flatten().flatten().any(|&v| v > 0.01);
+        assert!(has_color2, "Point in front of camera (z>0) should be visible");
     }
 }
