@@ -8,7 +8,6 @@ use candle_core::{Tensor, Device, DType, Var};
 use crate::fusion::training_pipeline::compute_ssim_loss;
 use crate::fusion::analytical_backward::{GaussianRenderRecord, ForwardIntermediate};
 use rayon::prelude::*;
-
 /// Tile size for parallel rasterization (16x16 matches GPU warp-friendly sizing)
 const TILE_SIZE: usize = 16;
 
@@ -181,7 +180,7 @@ pub struct DiffSplatRenderer {
 impl DiffSplatRenderer {
     pub fn new(width: usize, height: usize) -> Self {
         let device = Device::new_metal(0).unwrap_or_else(|_| Device::Cpu);
-        println!("DiffSplatRenderer using: {:?}", device);
+        log::info!("DiffSplatRenderer using: {:?}", device);
         
         Self {
             device,
@@ -251,87 +250,11 @@ impl DiffSplatRenderer {
         })
     }
 
-    /// Render color and depth using front-to-back alpha compositing.
-    fn render_alpha_blend(
-        &self,
-        projected: &ProjectedGaussiansCpu,
-        colors: &[[f32; 3]],
-        opacities: &[f32],
-    ) -> (Vec<f32>, Vec<f32>) {
-        let pixel_count = self.width * self.height;
-        let mut color = vec![0.0f32; pixel_count * 3];
-        let mut depth_acc = vec![0.0f32; pixel_count];
-        let mut alpha_acc = vec![0.0f32; pixel_count];
-
-        let mut order: Vec<usize> = (0..projected.u.len()).collect();
-        order.sort_by(|&a, &b| projected.z[a].partial_cmp(&projected.z[b]).unwrap_or(std::cmp::Ordering::Equal));
-
-        for idx in order {
-            let z = projected.z[idx];
-            if z <= 1e-6 {
-                continue;
-            }
-
-            let u = projected.u[idx];
-            let v = projected.v[idx];
-            let sigma_x = projected.scale_x[idx].abs().max(0.5);
-            let sigma_y = projected.scale_y[idx].abs().max(0.5);
-            let radius_x = (3.0 * sigma_x).ceil() as isize;
-            let radius_y = (3.0 * sigma_y).ceil() as isize;
-
-            let min_x = (u.floor() as isize - radius_x).max(0) as usize;
-            let max_x = (u.ceil() as isize + radius_x).min(self.width as isize - 1) as usize;
-            let min_y = (v.floor() as isize - radius_y).max(0) as usize;
-            let max_y = (v.ceil() as isize + radius_y).min(self.height as isize - 1) as usize;
-
-            let base_alpha = opacities[idx].clamp(0.0, 1.0);
-            let rgb = colors[idx];
-
-            for py in min_y..=max_y {
-                for px in min_x..=max_x {
-                    let dx = (px as f32 + 0.5 - u) / sigma_x;
-                    let dy = (py as f32 + 0.5 - v) / sigma_y;
-                    let kernel = (-0.5 * (dx * dx + dy * dy)).exp();
-                    let alpha = (base_alpha * kernel).clamp(0.0, 0.99);
-                    if alpha <= 1e-6 {
-                        continue;
-                    }
-
-                    let pidx = py * self.width + px;
-                    let transmittance = 1.0 - alpha_acc[pidx];
-                    let contribution = transmittance * alpha;
-                    if contribution <= 1e-8 {
-                        continue;
-                    }
-
-                    color[pidx * 3] += contribution * rgb[0];
-                    color[pidx * 3 + 1] += contribution * rgb[1];
-                    color[pidx * 3 + 2] += contribution * rgb[2];
-                    depth_acc[pidx] += contribution * z;
-                    alpha_acc[pidx] += contribution;
-                }
-            }
-        }
-
-        for pidx in 0..pixel_count {
-            if alpha_acc[pidx] > 1e-6 {
-                depth_acc[pidx] /= alpha_acc[pidx];
-            } else {
-                depth_acc[pidx] = 0.0;
-            }
-            let c = pidx * 3;
-            color[c] = color[c].clamp(0.0, 1.0);
-            color[c + 1] = color[c + 1].clamp(0.0, 1.0);
-            color[c + 2] = color[c + 2].clamp(0.0, 1.0);
-        }
-
-        (color, depth_acc)
-    }
-
     /// Tiled parallel rasterization using rayon.
     ///
     /// Returns raw (color_acc, depth_acc, alpha_acc) before normalization/clamping.
     /// Tiles are independent, so each tile can be processed in parallel.
+    #[inline]
     fn render_tiled_parallel(
         &self,
         projected: &ProjectedGaussiansCpu,
@@ -474,6 +397,7 @@ impl DiffSplatRenderer {
     }
 
     /// Normalize depth by alpha and clamp color to [0,1].
+    #[inline]
     fn finalize_buffers(color: &mut [f32], depth: &mut [f32], alpha: &[f32]) {
         let pixel_count = alpha.len();
         for pidx in 0..pixel_count {
@@ -573,7 +497,6 @@ impl DiffSplatRenderer {
         let colors_tensor = gaussians.colors();
 
         // Also get raw (pre-activation) values
-        let log_scales_raw = gaussians.scales.as_tensor().to_vec2::<f32>()?;
         let opacity_logits_raw = gaussians.opacities.as_tensor().to_vec1::<f32>()?;
 
         // Project to 2D
@@ -1215,8 +1138,8 @@ mod tests {
             &device,
         ).unwrap();
 
-        // Camera with identity rotation but translation [0, 0, -5]
-        // moves camera back, so point at origin is at z=5 in camera space
+        // Camera with identity rotation and translation [0, 0, -5]
+        // p_cam = R*p + t = [0,0,0] + [0,0,-5] = [0,0,-5] → z=-5, behind camera
         let cam = DiffCamera::new(
             500.0, 500.0, 32.0, 32.0, 64, 64,
             &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
