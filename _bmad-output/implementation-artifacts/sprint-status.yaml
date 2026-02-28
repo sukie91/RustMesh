@@ -1,0 +1,135 @@
+# generated: 2026-02-23
+# project: RustScan
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+#
+# BROWNFIELD NOTE:
+# ================
+# - This project had significant code written before BMAD workflow was adopted
+# - Statuses reflect actual code implementation state from code review (2026-02-23)
+# - No story files exist in implementation-artifacts; status derived from epics.md + code review
+# - Epic 3 and Epic 4 marked in-progress due to quality issues found in code review
+
+generated: 2026-02-23
+project: RustScan
+project_key: NOKEY
+tracking_system: file-system
+story_location: "_bmad-output/implementation-artifacts"
+
+development_status:
+  # ============================================================
+  # Epic 1: CLI Infrastructure & Configuration — DONE
+  # ============================================================
+  epic-1: done
+  1-1-basic-cli-argument-parsing: done
+  1-2-configuration-file-support: done
+  1-3-cli-argument-override: done
+  1-4-configurable-logging-system: done
+  1-5-structured-json-output: done
+  1-6-error-handling-with-recovery-suggestions: done
+  epic-1-retrospective: optional
+
+  # ============================================================
+  # Epic 2: Video Input & Decoding — DONE
+  # ============================================================
+  epic-2: done
+  2-1-video-format-detection-and-validation: done
+  2-2-hardware-accelerated-video-decoding: done
+  2-3-on-demand-frame-extraction-with-lru-cache: done
+  epic-2-retrospective: optional
+
+  # ============================================================
+  # Epic 3: SLAM Processing Pipeline — DONE
+  # All code review fixes complete (3.7-3.11). All 11 stories done.
+  # ============================================================
+  epic-3: done
+  3-1-feature-extraction-orb-harris-fast: done
+  3-2-feature-matching-between-frames: done
+  3-3-camera-pose-estimation: done
+  3-4-bundle-adjustment-optimization: done
+  3-5-loop-detection-and-closing: done
+  3-6-pipeline-checkpoint-and-recovery: done
+  3-7-implement-true-binary-brief-descriptors: done
+  3-8-fix-knnmatcher-distance-metric: done
+  3-9-implement-functional-relocalization: done
+  3-10-add-3d-point-updates-during-vo-tracking: done
+  3-11-fix-pnp-ransac-fallback-and-vo-init-logic: done
+  epic-3-retrospective: done
+
+  # ============================================================
+  # Epic 4: 3DGS Training & Scene Generation — DONE
+  # All stories complete after CR round 2 inline fix
+  # ============================================================
+  epic-4: done
+  4-1-gaussian-initialization-from-slam: done
+  4-2-differentiable-gaussian-rasterization-gpu: done
+  4-3-3dgs-training-with-depth-loss: done
+  4-4-gaussian-densification-and-pruning: done
+  4-5-3dgs-scene-file-export: done
+  4-6-training-checkpoint-and-resume: done
+  4-7-fix-tiled-renderer-gaussian-kernel-distance-bug: done
+  epic-4-retrospective: optional
+
+  # ============================================================
+  # Epic 5: Mesh Extraction & Export — DONE
+  # ============================================================
+  epic-5: done
+  5-1-tsdf-volume-fusion-from-depth-maps: done
+  5-2-marching-cubes-mesh-extraction: done
+  5-3-mesh-post-processing: done
+  5-4-mesh-export-obj-and-ply: done
+  5-5-mesh-metadata-json-export: done
+  epic-5-retrospective: optional
+
+  # ============================================================
+  # Epic 6: End-to-End Pipeline Integration — DONE
+  # ============================================================
+  epic-6: done
+  6-1-sequential-pipeline-orchestration: done
+  6-2-cross-stage-checkpoint-management: done
+  6-3-progress-reporting-and-logging: done
+  6-4-end-to-end-integration-tests: done
+  6-5-example-video-processing: done
+  epic-6-retrospective: optional
+
+  # ============================================================
+  # Epic 7: Cross-Cutting Infrastructure Fixes — PARTIALLY COMPLETE
+  # 7-1: Partial (AtomicU64 for IDs only, no full thread safety)
+  # 7-2: Done (camera.rs has from_config())
+  # 7-3: Done (config.rs has validate())
+  # ============================================================
+  epic-7: in-progress
+  7-1-add-thread-safety-to-map-struct: done
+  7-2-unify-camera-intrinsics-from-configuration: done
+  7-3-add-configuration-parameter-validation: done
+  epic-7-retrospective: optional
